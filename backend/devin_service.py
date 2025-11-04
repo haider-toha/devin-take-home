@@ -605,13 +605,18 @@ Please implement this solution and create a pull request with the changes. Inclu
                 parsed_json = json.loads(cleaned_response)
                 logger.info("Successfully parsed Devin response as JSON")
                 
+                # Ensure steps is always a list, never None
+                steps = parsed_json.get("implementation_steps", [])
+                if not isinstance(steps, list):
+                    steps = self._get_fallback_steps()
+                
                 return {
                     "session_id": session_id,
                     "summary": parsed_json.get("summary", ""),
                     "detailed_analysis": parsed_json.get("detailed_analysis", ""),
                     "confidence": parsed_json.get("confidence", self._calculate_confidence_heuristic(issue)),
                     "confidence_reasoning": parsed_json.get("confidence_reasoning", ""),
-                    "steps": parsed_json.get("implementation_steps", []),
+                    "steps": steps,
                     "complexity": parsed_json.get("complexity", "Medium"),
                     "potential_challenges": parsed_json.get("potential_challenges", []),
                     "success_criteria": parsed_json.get("success_criteria", []),
@@ -625,13 +630,18 @@ Please implement this solution and create a pull request with the changes. Inclu
                 # Fallback: Parse as text using the old method
                 parsed_data = self._parse_devin_text_response(actual_response)
                 
+                # Ensure steps is always a list, never None
+                steps = parsed_data.get("steps")
+                if not isinstance(steps, list):
+                    steps = self._get_fallback_steps()
+                
                 return {
                     "session_id": session_id,
                     "summary": parsed_data.get("summary", actual_response[:500]),
                     "detailed_analysis": "",
                     "confidence": parsed_data.get("confidence", self._calculate_confidence_heuristic(issue)),
                     "confidence_reasoning": "",
-                    "steps": parsed_data.get("steps", self._get_fallback_steps()),
+                    "steps": steps,
                     "complexity": "Medium",
                     "potential_challenges": [],
                     "success_criteria": [],
@@ -640,13 +650,15 @@ Please implement this solution and create a pull request with the changes. Inclu
         else:
             # No response found - return fallback
             logger.warning("No Devin response found, using fallback analysis")
+            fallback_steps = self._get_fallback_steps()
+            
             return {
                 "session_id": session_id,
                 "summary": "Analysis in progress - Devin has not provided output yet",
                 "detailed_analysis": "",
                 "confidence": self._calculate_confidence_heuristic(issue),
                 "confidence_reasoning": "Based on issue characteristics and labels",
-                "steps": self._get_fallback_steps(),
+                "steps": fallback_steps if isinstance(fallback_steps, list) else [],
                 "complexity": "Medium",
                 "potential_challenges": [],
                 "success_criteria": [],
