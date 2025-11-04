@@ -142,22 +142,27 @@ async def get_issue(issue_number: int):
 
 # Analysis endpoints
 @app.post("/api/analyze/{issue_number}")
-async def analyze_issue(issue_number: int, post_comment: bool = True):
+async def analyze_issue(issue_number: int, post_comment: bool = True, unified: bool = False):
     """
     Analyze a GitHub issue using Devin AI - Synchronous, no streaming
     
     Args:
         issue_number: The issue number to analyze
         post_comment: Whether to post the analysis as a comment on GitHub
+        unified: If True, performs both analysis and implementation in one session
     """
     try:
-        logger.info(f"Starting synchronous analysis for issue #{issue_number}")
+        session_type = "unified analysis+implementation" if unified else "analysis"
+        logger.info(f"Starting synchronous {session_type} for issue #{issue_number}")
         
         # Fetch the issue
         issue = github_service.get_issue(issue_number)
         
-        # Create Devin analysis session and wait for completion
-        analysis = devin_service.create_analysis_session(issue)
+        # Create Devin session - unified or analysis-only
+        if unified:
+            analysis = devin_service.create_unified_session(issue)
+        else:
+            analysis = devin_service.create_analysis_session(issue)
         
         # Store the result
         if issue_number not in issue_results:
@@ -167,22 +172,38 @@ async def analyze_issue(issue_number: int, post_comment: bool = True):
 
         logger.info(f"Analysis completed for issue #{issue_number}:")
         logger.info(f"  - Status: {analysis.get('status')}")
-        logger.info(f"  - Summary length: {len(analysis.get('summary', ''))}")
+        logger.info(f"  - Summary length: {len(analysis.get('summary', '')) if analysis.get('summary') else 0}")
         logger.info(f"  - Confidence: {analysis.get('confidence')}")
-        logger.info(f"  - Steps count: {len(analysis.get('steps', []))}")
+        logger.info(f"  - post_comment parameter: {post_comment}")
+        
+        # Safe steps count - handle None case
+        steps = analysis.get('steps', [])
+        steps_count = len(steps) if steps is not None else 0
+        logger.info(f"  - Steps count: {steps_count}")
         
         # Always include session_url for debugging if available
         if "session_id" in analysis and analysis["session_id"] != "fallback-session":
             analysis["session_url"] = f"https://app.devin.ai/sessions/{analysis['session_id']}"
 
         # Post comment to GitHub if requested
-        if post_comment and analysis.get("status") == "completed":
+        # Accept multiple completion status values from both status and status_enum fields
+        completed_statuses = {"completed", "success", "done", "finished", "blocked"}
+        analysis_status = analysis.get("status", "").lower()
+        analysis_status_enum = analysis.get("status_enum", "").lower()
+        
+        # Check both status and status_enum fields (Devin uses status_enum for more detailed status)
+        is_completed = (analysis_status in completed_statuses or 
+                       analysis_status_enum in completed_statuses)
+        
+        if post_comment and is_completed:
             try:
                 comment = github_service.format_analysis_comment(analysis)
                 github_service.post_comment(issue_number, comment)
-                logger.info(f"Posted analysis comment to issue #{issue_number}")
+                logger.info(f"Posted analysis comment to issue #{issue_number} (status: {analysis_status}, status_enum: {analysis_status_enum})")
             except Exception as e:
                 logger.warning(f"Failed to post comment: {str(e)}")
+        elif post_comment:
+            logger.info(f"Skipping comment post for issue #{issue_number} - status '{analysis_status}' and status_enum '{analysis_status_enum}' not in completed statuses: {completed_statuses}")
 
         logger.info(f"Returning complete analysis response for issue #{issue_number}")
         return {
@@ -355,6 +376,24 @@ async def stream_session_updates(session_id: str):
                                 # Update stored analysis
                                 issue_results[issue_num_to_update]["analysis"] = updated_analysis
                                 logger.info(f"Updated analysis for issue #{issue_num_to_update} with final results")
+                                
+                                # Post comment to GitHub for streaming completed analysis
+                                # Check if the updated analysis should trigger a comment
+                                completed_statuses = {"completed", "success", "done", "finished", "blocked"}
+                                analysis_status = updated_analysis.get("status", "").lower()
+                                analysis_status_enum = updated_analysis.get("status_enum", "").lower()
+                                is_completed = (analysis_status in completed_statuses or 
+                                               analysis_status_enum in completed_statuses)
+                                
+                                if is_completed:
+                                    try:
+                                        comment = github_service.format_analysis_comment(updated_analysis)
+                                        github_service.post_comment(issue_num_to_update, comment)
+                                        logger.info(f"Posted streaming completion comment to issue #{issue_num_to_update} (status: {analysis_status}, status_enum: {analysis_status_enum})")
+                                    except Exception as comment_error:
+                                        logger.warning(f"Failed to post streaming completion comment: {str(comment_error)}")
+                                else:
+                                    logger.info(f"Skipping streaming comment post for issue #{issue_num_to_update} - status '{analysis_status}' and status_enum '{analysis_status_enum}' not in completed statuses: {completed_statuses}")
                                 
                                 # Send updated analysis in completion event
                                 completion_data = {

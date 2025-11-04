@@ -32,9 +32,7 @@ export interface GitHubIssue {
 export interface Analysis {
   session_id: string
   summary: string
-  detailed_analysis?: string
   confidence: number
-  confidence_reasoning?: string
   steps: string[]
   complexity?: string
   potential_challenges?: string[]
@@ -42,6 +40,10 @@ export interface Analysis {
   status: string
   note?: string
   session_url?: string
+  type?: string
+  implementation_status?: string
+  pr_url?: string
+  pr_number?: string
 }
 
 export interface Execution {
@@ -76,11 +78,15 @@ export const getIssue = async (issueNumber: number): Promise<GitHubIssue> => {
   return response.data.issue
 }
 
-export const analyzeIssue = async (issueNumber: number, postComment: boolean = true): Promise<Analysis> => {
+export const analyzeIssue = async (issueNumber: number, postComment: boolean = true, unified: boolean = false): Promise<Analysis> => {
   const response = await api.post(`/analyze/${issueNumber}`, null, {
-    params: { post_comment: postComment }
+    params: { post_comment: postComment, unified: unified }
   })
   return response.data.analysis
+}
+
+export const analyzeAndImplementIssue = async (issueNumber: number, postComment: boolean = true): Promise<Analysis> => {
+  return analyzeIssue(issueNumber, postComment, true)
 }
 
 export const executeIssue = async (issueNumber: number): Promise<Execution> => {

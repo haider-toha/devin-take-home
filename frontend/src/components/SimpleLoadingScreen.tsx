@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
-import { StreamEvent, streamSessionUpdates } from '../services/api'
+import { getSessionStatus } from '../services/api'
 
 interface SimpleLoadingScreenProps {
   sessionId: string
-  type: 'analysis' | 'execution'
+  type: 'analysis' | 'execution' | 'unified'
   onComplete?: (sessionId: string, completionData?: any) => void
 }
 
@@ -11,53 +11,92 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
   const [isCompleted, setIsCompleted] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [completionData, setCompletionData] = useState<any>(null)
-  const cleanupRef = useRef<(() => void) | null>(null)
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     if (!sessionId) return
+    
+    // Handle cases where we just show loading without polling
+    if (sessionId === 'immediate-completion' || sessionId === 'loading') {
+      return // Just show loading state, parent component will handle completion
+    }
 
-    const cleanup = streamSessionUpdates(
-      sessionId,
-      (event: StreamEvent) => {
-        switch (event.type) {
-          case 'completed':
-            setIsCompleted(true)
-            setCompletionData(event.data)
-            onComplete?.(sessionId, event.data)
-            break
+    // Poll for completion every 3 seconds
+    const pollForCompletion = async () => {
+      try {
+        const sessionData = await getSessionStatus(sessionId)
+        const status = sessionData.status
+        const statusEnum = sessionData.status_enum
 
-          case 'error':
-            setError(`Error: ${event.data.error}`)
-            break
-
-          case 'fatal_error':
-            setError(`Connection failed: ${event.data.error}`)
-            setIsCompleted(true)
-            break
+        // Check if session is completed
+        if (status === 'completed' || status === 'success' || 
+            statusEnum === 'completed' || statusEnum === 'blocked') {
+          setIsCompleted(true)
+          setCompletionData(sessionData)
+          onComplete?.(sessionId, sessionData)
+          
+          // Clear polling
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current)
+          }
+        } else if (status === 'failed' || status === 'error' || 
+                   statusEnum === 'failed' || statusEnum === 'error') {
+          setError('Session failed or encountered an error')
+          setIsCompleted(true)
+          
+          // Clear polling
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current)
+          }
         }
-      },
-      (error: Error) => {
-        setError(error.message)
-      },
-      () => {
-        setIsCompleted(true)
+      } catch (err) {
+        console.error('Error polling session status:', err)
+        setError('Failed to check session status')
       }
-    )
+    }
 
-    cleanupRef.current = cleanup
+    // Start polling
+    pollForCompletion() // Initial check
+    intervalRef.current = setInterval(pollForCompletion, 3000)
 
     return () => {
-      cleanup()
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
     }
   }, [sessionId, onComplete])
 
-  const title = type === 'analysis' ? 'Analyzing with Devin' : 'Implementing with Devin'
-  const description = type === 'analysis'
-    ? 'Devin is analyzing the issue and creating an implementation plan. This may take a few minutes...'
-    : 'Devin is working on implementing the solution and creating a pull request. This may take several minutes...'
+  const getTitle = () => {
+    switch (type) {
+      case 'analysis':
+        return 'Analyzing with Devin'
+      case 'execution':
+        return 'Implementing with Devin'
+      case 'unified':
+        return 'Working with Devin'
+      default:
+        return 'Working with Devin'
+    }
+  }
 
-  // Show completion message for execution
-  if (isCompleted && type === 'execution' && !error) {
+  const getDescription = () => {
+    switch (type) {
+      case 'analysis':
+        return 'Devin is analyzing the issue and creating an implementation plan. This may take a few minutes...'
+      case 'execution':
+        return 'Devin is working on implementing the solution and creating a pull request. This may take several minutes...'
+      case 'unified':
+        return 'Devin is analyzing the issue and implementing the solution. This may take several minutes...'
+      default:
+        return 'Devin is working on your request. This may take several minutes...'
+    }
+  }
+
+  const title = getTitle()
+  const description = getDescription()
+
+  // Show completion message for execution or unified
+  if (isCompleted && (type === 'execution' || type === 'unified') && !error) {
     const prUrl = completionData?.pr_url
     const prNumber = completionData?.pr_number
 
@@ -232,11 +271,14 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
               <div className="flex items-start gap-3">
                 <div>
                   <p className="text-sm font-medium text-gray-900 mb-1">
-                    {type === 'analysis' ? 'Reading and Understanding' : 'Working on Implementation'}
+                    {type === 'analysis' ? 'Reading and Understanding' : 
+                     type === 'unified' ? 'Analyzing and Implementing' : 'Working on Implementation'}
                   </p>
                   <p className="text-xs text-gray-600">
                     {type === 'analysis'
                       ? 'Devin is analyzing the issue requirements, existing code, and planning the best approach.'
+                      : type === 'unified'
+                      ? 'Devin is analyzing the issue requirements and implementing the complete solution.'
                       : 'Devin is writing code, running tests, and preparing a pull request with the changes.'
                     }
                   </p>
@@ -244,7 +286,7 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
               </div>
             </div>
 
-            {type === 'execution' && (
+            {(type === 'execution' || type === 'unified') && (
               <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                 <div className="flex items-start gap-3">
                   <div>
@@ -252,8 +294,10 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
                       This may take a while
                     </p>
                     <p className="text-xs text-gray-600">
-                      Implementation typically takes 5-15 minutes depending on complexity.
-                      You can safely navigate away and check back later.
+                      {type === 'unified' 
+                        ? 'Analysis and implementation typically takes 10-20 minutes depending on complexity. You can safely navigate away and check back later.'
+                        : 'Implementation typically takes 5-15 minutes depending on complexity. You can safely navigate away and check back later.'
+                      }
                     </p>
                   </div>
                 </div>

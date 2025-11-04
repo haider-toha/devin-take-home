@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { GitHubIssue, analyzeIssue, executeIssue, getIssue } from '../services/api'
 import AnalysisPanel from './AnalysisPanel'
-import StreamingProgress from './StreamingProgress'
+import SimpleLoadingScreen from './SimpleLoadingScreen'
 
 interface IssueCardProps {
   issue: GitHubIssue
@@ -12,86 +12,104 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isExecuting, setIsExecuting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null)
-  const [streamingType, setStreamingType] = useState<'analysis' | 'execution' | null>(null)
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null)
+  const [loadingType, setLoadingType] = useState<'analysis' | 'execution' | null>(null)
 
   const handleAnalyze = async () => {
+    // Prevent multiple simultaneous calls
+    if (isAnalyzing) {
+      console.log('Analysis already in progress, skipping duplicate call')
+      return
+    }
+    
+    console.log(`Starting analysis for issue #${issue.number}`)
     setIsAnalyzing(true)
     setError(null)
-    setStreamingType('analysis')
+    setLoadingType('analysis')
+    setLoadingSessionId('loading') // Show loading screen immediately
+    
     try {
       const analysis = await analyzeIssue(issue.number, true)
+      console.log(`Analysis API response for issue #${issue.number}:`, analysis)
       
-      // Analysis is now synchronous - no streaming needed
-      // Just update immediately with the completed analysis
-      const updatedIssue = { ...issue, analysis }
-      onUpdate(updatedIssue)
-      setIsAnalyzing(false)
-      setStreamingType(null)
+      // Check if we need to poll or complete immediately
+      if (analysis.status === 'running' && analysis.session_id) {
+        setLoadingSessionId(analysis.session_id) // Switch to real session ID for polling
+      } else {
+        // Analysis completed immediately - show loading briefly then complete
+        setTimeout(() => {
+          const updatedIssue = { ...issue, analysis }
+          onUpdate(updatedIssue)
+          setIsAnalyzing(false)
+          setLoadingType(null)
+          setLoadingSessionId(null)
+        }, 1000) // Show loading for 1 second even if immediate
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to analyze issue')
       setIsAnalyzing(false)
-      setStreamingType(null)
+      setLoadingType(null)
+      setLoadingSessionId(null)
     }
   }
 
   const handleExecute = async () => {
     setIsExecuting(true)
     setError(null)
-    setStreamingType('execution')
+    setLoadingType('execution')
+    setLoadingSessionId('loading') // Show loading screen immediately
+    
     try {
       const execution = await executeIssue(issue.number)
       
-      // Start streaming if we got a session ID
+      // Check if we need to poll or complete immediately
       if (execution.session_id && execution.session_id !== 'fallback-execution') {
-        setStreamingSessionId(execution.session_id)
+        setLoadingSessionId(execution.session_id) // Switch to real session ID for polling
       } else {
-        // No streaming available, just update immediately
-        const updatedIssue = { ...issue, execution }
-        onUpdate(updatedIssue)
-        setIsExecuting(false)
-        setStreamingType(null)
+        // Execution completed immediately (fallback) - show loading briefly then complete
+        setTimeout(() => {
+          const updatedIssue = { ...issue, execution }
+          onUpdate(updatedIssue)
+          setIsExecuting(false)
+          setLoadingType(null)
+          setLoadingSessionId(null)
+        }, 1000) // Show loading for 1 second even if immediate
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to execute plan')
       setIsExecuting(false)
-      setStreamingType(null)
+      setLoadingType(null)
+      setLoadingSessionId(null)
     }
   }
 
-  const handleStreamComplete = (sessionId: string, hasUpdatedAnalysis?: boolean) => {
+  const handleLoadingComplete = (sessionId: string, completionData?: any) => {
+    console.log(`Loading completed for issue #${issue.number}, sessionId: ${sessionId}`, completionData)
+    
     // Re-fetch the issue to get updated analysis/execution results
-    if (streamingType === 'analysis') {
+    setTimeout(async () => {
+      try {
+        console.log(`Re-fetching issue #${issue.number} after completion`)
+        const updatedIssue = await getIssue(issue.number)
+        console.log(`Updated issue #${issue.number} after completion:`, {
+          hasAnalysis: !!updatedIssue.analysis,
+          analysisStatus: updatedIssue.analysis?.status
+        })
+        onUpdate(updatedIssue)
+      } catch (error) {
+        console.error('Failed to refresh issue after completion:', error)
+      }
+    }, 500) // Small delay to ensure backend has processed the update
+    
+    // Reset loading states
+    if (loadingType === 'analysis') {
       setIsAnalyzing(false)
-      
-      // If the backend updated the analysis, refresh the issue data
-      if (hasUpdatedAnalysis) {
-        setTimeout(async () => {
-          try {
-            const updatedIssue = await getIssue(issue.number)
-            onUpdate(updatedIssue)
-          } catch (error) {
-            console.error('Failed to refresh issue after analysis completion:', error)
-          }
-        }, 500) // Small delay to ensure backend has processed the update
-      }
-    } else if (streamingType === 'execution') {
+    } else if (loadingType === 'execution') {
       setIsExecuting(false)
-      
-      if (hasUpdatedAnalysis) {
-        setTimeout(async () => {
-          try {
-            const updatedIssue = await getIssue(issue.number)
-            onUpdate(updatedIssue)
-          } catch (error) {
-            console.error('Failed to refresh issue after execution completion:', error)
-          }
-        }, 500)
-      }
     }
     
-    setStreamingSessionId(null)
-    setStreamingType(null)
+    setLoadingSessionId(null)
+    setLoadingType(null)
   }
 
   const formatDate = (dateString: string) => {
@@ -180,7 +198,7 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
           {!issue.analysis && (
             <button
               onClick={handleAnalyze}
-              disabled={isAnalyzing}
+              disabled={isAnalyzing || loadingSessionId !== null}
               className="flex items-center gap-2 bg-primary-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isAnalyzing ? (
@@ -227,18 +245,18 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
         </div>
 
         {/* Streaming Progress */}
-        {streamingSessionId && streamingType && (
+        {loadingSessionId && loadingType && (
           <div className="mt-6">
-            <StreamingProgress 
-              sessionId={streamingSessionId}
-              onComplete={handleStreamComplete}
-              title={streamingType === 'analysis' ? 'Analyzing with Devin...' : 'Implementing with Devin...'}
+            <SimpleLoadingScreen 
+              sessionId={loadingSessionId}
+              type={loadingType}
+              onComplete={handleLoadingComplete}
             />
           </div>
         )}
 
         {/* Analysis Panel */}
-        {issue.analysis && !(streamingSessionId && streamingType === 'execution') && (
+        {issue.analysis && !(loadingSessionId && loadingType === 'execution') && (
           <div className="mt-6">
             <AnalysisPanel analysis={issue.analysis} execution={issue.execution} />
           </div>

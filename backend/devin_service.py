@@ -34,9 +34,7 @@ class DevinService:
 
 {{
   "summary": "A comprehensive summary of what needs to be done (2-4 sentences)",
-  "detailed_analysis": "A detailed technical analysis explaining the approach, challenges, and solution overview (5-8 sentences)",
   "confidence": 0.85,
-  "confidence_reasoning": "Brief explanation of why you have this confidence level",
   "implementation_steps": [
     "Step 1: Clear, actionable step",
     "Step 2: Another clear step",
@@ -133,6 +131,118 @@ IMPORTANT: Respond ONLY with the JSON object above, no additional text or format
         except requests.exceptions.RequestException as e:
             logger.error(f"Error creating Devin analysis session: {str(e)}")
             # Return a fallback analysis
+            return self._create_fallback_analysis(issue, str(e))
+    
+    def create_unified_session(self, issue: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a Devin session that performs both analysis and implementation
+        
+        Args:
+            issue: GitHub issue dictionary
+            
+        Returns:
+            Analysis results that will include implementation status when complete
+        """
+        try:
+            issue_number = issue.get("number", "unknown")
+            issue_title = issue.get("title", "")
+            issue_body = issue.get("body", "")
+            issue_labels = [label["name"] for label in issue.get("labels", [])]
+            repo = settings.github_repo
+            
+            # Construct unified analysis + implementation prompt
+            prompt = f"""I need you to analyze this GitHub issue and then implement the solution. Please follow this process:
+
+1. ANALYZE the issue first and provide a JSON response with your analysis:
+{{
+  "summary": "A comprehensive summary of what needs to be done (2-4 sentences)",
+  "confidence": 0.85,
+  "implementation_steps": [
+    "Step 1: Clear, actionable step",
+    "Step 2: Another clear step", 
+    "Step 3: Continue with logical progression"
+  ],
+  "complexity": "Low/Medium/High",
+  "potential_challenges": ["Challenge 1", "Challenge 2"],
+  "success_criteria": ["Criteria 1", "Criteria 2"]
+}}
+
+2. After providing the analysis, IMPLEMENT the solution:
+   - Access the repository: {repo}
+   - Make the necessary code changes
+   - Write or update tests as needed
+   - Create a pull request with proper description
+   - Include the issue number in your PR title/description
+
+GitHub Issue #{issue_number}:
+Title: {issue_title}
+
+Description:
+{issue_body or 'No description provided'}
+
+Labels: {', '.join(issue_labels) if issue_labels else 'None'}
+
+Start with the JSON analysis, then proceed with implementation."""
+
+            payload = {
+                "prompt": prompt,
+                "metadata": {
+                    "issue_number": issue_number,
+                    "type": "unified",
+                    "repo": repo
+                }
+            }
+            
+            logger.info(f"Creating Devin unified session for issue #{issue_number}")
+            response = requests.post(
+                f"{self.base_url}/sessions",
+                headers=self.headers,
+                json=payload
+            )
+            response.raise_for_status()
+            
+            session_data = response.json()
+            logger.info(f"Devin API response: {session_data}")
+            
+            # Try to extract session ID
+            session_id = session_data.get("id") or session_data.get("session_id") or session_data.get("sessionId")
+            if not session_id and isinstance(session_data.get("data"), dict):
+                session_id = session_data.get("data", {}).get("id")
+            
+            if not session_id:
+                logger.error(f"No session ID found in response: {session_data}")
+                raise Exception(f"Devin API did not return a session ID: {session_data}")
+            
+            logger.info(f"Created unified session {session_id} for issue #{issue_number}")
+
+            # Poll for results with longer timeout for unified sessions
+            try:
+                result = self._wait_for_session_result(session_id, max_wait=900, interval=10)  # 15 minutes max
+                # Parse and structure the result
+                analysis = self._parse_unified_result(result, session_id, issue)
+                return analysis
+            except Exception as e:
+                logger.warning(f"Error waiting for unified session result: {str(e)}")
+                # Return partial result with session info
+                return {
+                    "session_id": session_id,
+                    "summary": f"Devin is working on analysis and implementation. This may take 10-20 minutes for complex issues.",
+                    "confidence": self._calculate_confidence_heuristic(issue),
+                    "steps": ["Analysis in progress", "Implementation will follow", "Check session link for live updates"],
+                    "status": "running",
+                    "type": "unified",
+                    "session_url": session_data.get("url", f"https://app.devin.ai/sessions/{session_id.replace('devin-', '')}")
+                }
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                logger.warning(f"Devin API rate limit reached for issue #{issue_number}")
+                return self._create_fallback_analysis(issue, "API rate limit reached - please try again in a few minutes")
+            else:
+                logger.error(f"Error creating Devin unified session: {str(e)}")
+                return self._create_fallback_analysis(issue, str(e))
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error creating Devin unified session: {str(e)}")
             return self._create_fallback_analysis(issue, str(e))
     
     def create_execution_session(self, issue: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -594,37 +704,63 @@ Please implement this solution and create a pull request with the changes. Inclu
             
             # First, try to parse as JSON (new structured format)
             try:
-                # Clean the response - sometimes Devin adds markdown formatting
-                cleaned_response = actual_response.strip()
-                if cleaned_response.startswith("```json"):
-                    cleaned_response = cleaned_response[7:]  # Remove ```json
-                if cleaned_response.endswith("```"):
-                    cleaned_response = cleaned_response[:-3]  # Remove ```
-                cleaned_response = cleaned_response.strip()
+                # Extract JSON from response - handle various formats
+                json_text = None
                 
-                parsed_json = json.loads(cleaned_response)
-                logger.info("Successfully parsed Devin response as JSON")
+                # Method 1: Look for JSON block markers
+                if "```json" in actual_response and "```" in actual_response:
+                    start_marker = actual_response.find("```json") + 7
+                    end_marker = actual_response.find("```", start_marker)
+                    if end_marker > start_marker:
+                        json_text = actual_response[start_marker:end_marker].strip()
+                
+                # Method 2: Look for JSON object boundaries
+                if not json_text:
+                    # Find the first { and last }
+                    start_brace = actual_response.find("{")
+                    end_brace = actual_response.rfind("}")
+                    if start_brace != -1 and end_brace != -1 and end_brace > start_brace:
+                        json_text = actual_response[start_brace:end_brace + 1].strip()
+                
+                # Method 3: Try the whole response cleaned
+                if not json_text:
+                    json_text = actual_response.strip()
+                    if json_text.startswith("```json"):
+                        json_text = json_text[7:]
+                    if json_text.endswith("```"):
+                        json_text = json_text[:-3]
+                    json_text = json_text.strip()
+                
+                if json_text:
+                    parsed_json = json.loads(json_text)
+                    logger.info("Successfully parsed Devin response as JSON")
+                else:
+                    raise json.JSONDecodeError("No valid JSON found in response", actual_response, 0)
                 
                 # Ensure steps is always a list, never None
                 steps = parsed_json.get("implementation_steps", [])
                 if not isinstance(steps, list):
                     steps = self._get_fallback_steps()
                 
+                # Final safety check to ensure steps is never None
+                if steps is None:
+                    steps = self._get_fallback_steps()
+                
                 return {
                     "session_id": session_id,
                     "summary": parsed_json.get("summary", ""),
-                    "detailed_analysis": parsed_json.get("detailed_analysis", ""),
                     "confidence": parsed_json.get("confidence", self._calculate_confidence_heuristic(issue)),
-                    "confidence_reasoning": parsed_json.get("confidence_reasoning", ""),
                     "steps": steps,
                     "complexity": parsed_json.get("complexity", "Medium"),
                     "potential_challenges": parsed_json.get("potential_challenges", []),
                     "success_criteria": parsed_json.get("success_criteria", []),
-                    "status": session.get("status", "completed")
+                    "status": session.get("status", "completed"),
+                    "status_enum": session.get("status_enum", "")
                 }
                 
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse Devin response as JSON: {str(e)}")
+                logger.warning(f"JSON text that failed to parse (first 500 chars): {json_text[:500] if json_text else 'None'}")
                 logger.info("Falling back to text parsing")
                 
                 # Fallback: Parse as text using the old method
@@ -632,20 +768,23 @@ Please implement this solution and create a pull request with the changes. Inclu
                 
                 # Ensure steps is always a list, never None
                 steps = parsed_data.get("steps")
-                if not isinstance(steps, list):
+                if not isinstance(steps, list) or steps is None:
+                    steps = self._get_fallback_steps()
+                
+                # Final safety check to ensure steps is never None
+                if steps is None:
                     steps = self._get_fallback_steps()
                 
                 return {
                     "session_id": session_id,
                     "summary": parsed_data.get("summary", actual_response[:500]),
-                    "detailed_analysis": "",
                     "confidence": parsed_data.get("confidence", self._calculate_confidence_heuristic(issue)),
-                    "confidence_reasoning": "",
                     "steps": steps,
                     "complexity": "Medium",
                     "potential_challenges": [],
                     "success_criteria": [],
-                    "status": session.get("status", "completed")
+                    "status": session.get("status", "completed"),
+                    "status_enum": session.get("status_enum", "")
                 }
         else:
             # No response found - return fallback
@@ -655,14 +794,140 @@ Please implement this solution and create a pull request with the changes. Inclu
             return {
                 "session_id": session_id,
                 "summary": "Analysis in progress - Devin has not provided output yet",
-                "detailed_analysis": "",
                 "confidence": self._calculate_confidence_heuristic(issue),
-                "confidence_reasoning": "Based on issue characteristics and labels",
                 "steps": fallback_steps if isinstance(fallback_steps, list) else [],
                 "complexity": "Medium",
                 "potential_challenges": [],
                 "success_criteria": [],
-                "status": session.get("status", "running")
+                "status": session.get("status", "running"),
+                "status_enum": session.get("status_enum", "")
+            }
+    
+    def _parse_unified_result(self, session: Dict[str, Any], session_id: str, issue: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse Devin unified session result (analysis + implementation)
+
+        Args:
+            session: Session data from Devin API
+            session_id: Session ID
+            issue: GitHub issue (for heuristic fallback)
+
+        Returns:
+            Unified analysis and implementation results
+        """
+        import json
+        logger.info(f"Parsing Devin unified session result. Session keys: {list(session.keys())}")
+
+        # Extract the actual response from Devin
+        actual_response = self._extract_devin_response(session)
+        
+        if actual_response:
+            logger.info(f"Devin unified response preview: {str(actual_response)[:300]}...")
+            
+            # Try to parse JSON analysis first
+            try:
+                # Look for JSON in the response - it might be mixed with implementation text
+                lines = actual_response.split('\n')
+                json_lines = []
+                in_json = False
+                
+                for line in lines:
+                    if line.strip().startswith('{') or in_json:
+                        in_json = True
+                        json_lines.append(line)
+                        if line.strip().endswith('}') and line.count('}') >= line.count('{'):
+                            break
+                
+                if json_lines:
+                    json_text = '\n'.join(json_lines)
+                    # Clean the JSON
+                    if json_text.startswith("```json"):
+                        json_text = json_text[7:]
+                    if json_text.endswith("```"):
+                        json_text = json_text[:-3]
+                    json_text = json_text.strip()
+                    
+                    parsed_json = json.loads(json_text)
+                    logger.info("Successfully parsed JSON from unified response")
+                    
+                    # Check if implementation was completed by looking for PR indicators in response
+                    impl_status = "completed" if any(keyword in actual_response.lower() 
+                                                   for keyword in ['pull request', 'pr created', 'implemented', 'changes committed']) else "analysis_only"
+                    
+                    # Extract PR information if present
+                    pr_url = None
+                    pr_number = None
+                    if "pull request" in actual_response.lower() or "pr" in actual_response.lower():
+                        # Try to extract PR URL and number from response
+                        import re
+                        pr_match = re.search(r'https://github\.com/[^/]+/[^/]+/pull/(\d+)', actual_response)
+                        if pr_match:
+                            pr_number = pr_match.group(1)
+                            pr_url = pr_match.group(0)
+                    
+                    steps = parsed_json.get("implementation_steps", [])
+                    if not isinstance(steps, list):
+                        steps = self._get_fallback_steps()
+                    
+                    result = {
+                        "session_id": session_id,
+                        "summary": parsed_json.get("summary", ""),
+                        "confidence": parsed_json.get("confidence", self._calculate_confidence_heuristic(issue)),
+                        "steps": steps,
+                        "complexity": parsed_json.get("complexity", "Medium"),
+                        "potential_challenges": parsed_json.get("potential_challenges", []),
+                        "success_criteria": parsed_json.get("success_criteria", []),
+                        "status": impl_status,
+                        "type": "unified",
+                        "implementation_status": impl_status,
+                        "pr_url": pr_url,
+                        "pr_number": pr_number
+                    }
+                    
+                    return result
+                    
+            except (json.JSONDecodeError, IndexError) as e:
+                logger.warning(f"Failed to parse JSON from unified response: {str(e)}")
+                
+            # Fallback: Parse as text
+            parsed_data = self._parse_devin_text_response(actual_response)
+            
+            steps = parsed_data.get("steps")
+            if not isinstance(steps, list):
+                steps = self._get_fallback_steps()
+            
+            # Check for implementation indicators
+            impl_status = "completed" if any(keyword in actual_response.lower() 
+                                           for keyword in ['pull request', 'pr created', 'implemented', 'changes committed']) else "analysis_only"
+            
+            return {
+                "session_id": session_id,
+                "summary": parsed_data.get("summary", actual_response[:500]),
+                "confidence": parsed_data.get("confidence", self._calculate_confidence_heuristic(issue)),
+                "steps": steps,
+                "complexity": "Medium",
+                "potential_challenges": [],
+                "success_criteria": [],
+                "status": impl_status,
+                "type": "unified",
+                "implementation_status": impl_status
+            }
+        else:
+            # No response found - return fallback
+            logger.warning("No Devin response found for unified session, using fallback")
+            fallback_steps = self._get_fallback_steps()
+            
+            return {
+                "session_id": session_id,
+                "summary": "Unified analysis and implementation in progress - Devin has not provided output yet",
+                "confidence": self._calculate_confidence_heuristic(issue),
+                "steps": fallback_steps if isinstance(fallback_steps, list) else [],
+                "complexity": "Medium", 
+                "potential_challenges": [],
+                "success_criteria": [],
+                "status": session.get("status", "running"),
+                "type": "unified",
+                "implementation_status": "running"
             }
 
     def _extract_devin_response(self, session: Dict[str, Any]) -> str:
