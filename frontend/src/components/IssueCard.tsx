@@ -22,16 +22,12 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
     try {
       const analysis = await analyzeIssue(issue.number, true)
       
-      // Start streaming if we got a session ID
-      if (analysis.session_id && analysis.session_id !== 'fallback-session') {
-        setStreamingSessionId(analysis.session_id)
-      } else {
-        // No streaming available, just update immediately
-        const updatedIssue = { ...issue, analysis }
-        onUpdate(updatedIssue)
-        setIsAnalyzing(false)
-        setStreamingType(null)
-      }
+      // Analysis is now synchronous - no streaming needed
+      // Just update immediately with the completed analysis
+      const updatedIssue = { ...issue, analysis }
+      onUpdate(updatedIssue)
+      setIsAnalyzing(false)
+      setStreamingType(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to analyze issue')
       setIsAnalyzing(false)
@@ -242,7 +238,7 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
         )}
 
         {/* Analysis Panel */}
-        {issue.analysis && !streamingSessionId && (
+        {issue.analysis && !(streamingSessionId && streamingType === 'execution') && (
           <div className="mt-6">
             <AnalysisPanel analysis={issue.analysis} execution={issue.execution} />
           </div>

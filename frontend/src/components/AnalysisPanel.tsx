@@ -24,25 +24,38 @@ export default function AnalysisPanel({ analysis, execution }: AnalysisPanelProp
       </div>
 
       {/* Summary */}
-      <div className="mb-4">
+      <div className="mb-6">
         <h4 className="text-sm font-semibold text-gray-700 mb-2">Summary</h4>
-        <p className="text-gray-700 bg-gray-50 rounded-lg p-4">
+        <p className="text-gray-700 bg-gray-50 rounded-lg p-4 leading-relaxed">
           {analysis.summary}
         </p>
       </div>
 
       {/* Confidence Score */}
-      <div className="mb-4">
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Confidence Score</h4>
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-sm font-semibold text-gray-700">Confidence Score</h4>
+          {analysis.complexity && (
+            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+              analysis.complexity === 'Low' ? 'bg-green-100 text-green-800' :
+              analysis.complexity === 'High' ? 'bg-red-100 text-red-800' :
+              'bg-yellow-100 text-yellow-800'
+            }`}>
+              {analysis.complexity} Complexity
+            </span>
+          )}
+        </div>
         <ConfidenceBar confidence={analysis.confidence} />
       </div>
 
       {/* Implementation Steps */}
       {analysis.steps && analysis.steps.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-sm font-semibold text-gray-700 mb-3">
-            Proposed Implementation Steps
-          </h4>
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold text-gray-700">
+              Proposed Implementation Steps
+            </h4>
+          </div>
           <div className="space-y-2">
             {analysis.steps.map((step, index) => (
               <div
@@ -55,6 +68,63 @@ export default function AnalysisPanel({ analysis, execution }: AnalysisPanelProp
                 <p className="text-gray-700 flex-1">{step}</p>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Potential Challenges */}
+      {analysis.potential_challenges && analysis.potential_challenges.length > 0 && (
+        <div className="mb-6">
+          <h4 className="text-sm font-semibold text-gray-700 mb-3">Potential Challenges</h4>
+          <div className="space-y-2">
+            {analysis.potential_challenges.map((challenge, index) => (
+              <div
+                key={index}
+                className="flex items-start gap-2 bg-yellow-50 rounded-lg p-3 border border-yellow-100"
+              >
+                <span className="flex-shrink-0 text-yellow-600 text-lg">⚠️</span>
+                <p className="text-gray-700 text-sm">{challenge}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Success Criteria */}
+      {analysis.success_criteria && analysis.success_criteria.length > 0 && (
+        <div className="mb-6">
+          <h4 className="text-sm font-semibold text-gray-700 mb-3">Success Criteria</h4>
+          <div className="space-y-2">
+            {analysis.success_criteria.map((criteria, index) => (
+              <div
+                key={index}
+                className="flex items-start gap-2 bg-green-50 rounded-lg p-3 border border-green-100"
+              >
+                <span className="flex-shrink-0 text-green-600 text-lg">✅</span>
+                <p className="text-gray-700 text-sm">{criteria}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Session Link */}
+      {analysis.session_url && analysis.session_id !== 'fallback-session' && (
+        <div className="mb-4 bg-gray-50 border border-gray-200 rounded-lg p-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-700">Devin Session</p>
+              <p className="text-xs text-gray-500 mt-1">View detailed analysis progress and AI reasoning</p>
+            </div>
+            <a
+              href={analysis.session_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700 bg-white px-3 py-2 border border-primary-200 rounded-md hover:bg-primary-50 transition-colors"
+            >
+              View Session
+              <span>↗</span>
+            </a>
           </div>
         </div>
       )}

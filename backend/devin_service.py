@@ -1,5 +1,5 @@
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 import time
 from config import settings
@@ -29,11 +29,23 @@ class DevinService:
             issue_body = issue.get("body", "")
             issue_labels = [label["name"] for label in issue.get("labels", [])]
             
-            # Construct analysis prompt
-            prompt = f"""Analyze this GitHub issue and provide:
-1. A brief summary of what needs to be done
-2. A confidence score (0.0 to 1.0) indicating how feasible this is to solve
-3. A step-by-step implementation plan
+            # Construct analysis prompt with specific structure request
+            prompt = f"""Analyze this GitHub issue and provide your response in the following EXACT JSON format:
+
+{{
+  "summary": "A comprehensive summary of what needs to be done (2-4 sentences)",
+  "detailed_analysis": "A detailed technical analysis explaining the approach, challenges, and solution overview (5-8 sentences)",
+  "confidence": 0.85,
+  "confidence_reasoning": "Brief explanation of why you have this confidence level",
+  "implementation_steps": [
+    "Step 1: Clear, actionable step",
+    "Step 2: Another clear step",
+    "Step 3: Continue with logical progression"
+  ],
+  "complexity": "Low/Medium/High",
+  "potential_challenges": ["Challenge 1", "Challenge 2"],
+  "success_criteria": ["Criteria 1", "Criteria 2"]
+}}
 
 GitHub Issue #{issue_number}:
 Title: {issue_title}
@@ -43,7 +55,7 @@ Description:
 
 Labels: {', '.join(issue_labels) if issue_labels else 'None'}
 
-Please respond with a structured analysis including confidence level and actionable steps."""
+IMPORTANT: Respond ONLY with the JSON object above, no additional text or formatting. The JSON must be valid and parseable."""
 
             payload = {
                 "prompt": prompt,
@@ -259,17 +271,42 @@ Please implement this solution and create a pull request with the changes. Inclu
                     msg_timestamp = msg.get("timestamp", "")
                     
                     if msg_type == "devin_message" and msg_content:
-                        # Check if this looks like a thinking step or a final response
-                        if (len(msg_content) < 200 and 
-                            any(keyword in msg_content.lower() for keyword in 
-                                ["analyzing", "examining", "looking", "checking", "investigating"])):
-                            # Short messages with analysis keywords are likely thinking steps
+                        # Enhanced categorization for better streaming experience
+                        content_lower = msg_content.lower()
+                        
+                        # Check if this looks like a thinking/progress step
+                        if (len(msg_content) < 300 and 
+                            any(keyword in content_lower for keyword in 
+                                ["analyzing", "examining", "looking", "checking", "investigating", 
+                                 "let me", "i'll", "starting", "first", "next", "now"])):
+                            # Short messages with analysis keywords are thinking steps
                             thinking_steps.append({
                                 "content": msg_content,
                                 "timestamp": msg_timestamp
                             })
+                        # Check if it's a structured analysis response  
+                        elif ("summary" in content_lower and "confidence" in content_lower and 
+                              ("step" in content_lower or "plan" in content_lower)):
+                            # This is likely the main structured analysis - split into parts for streaming
+                            sections = msg_content.split('\n\n')
+                            for i, section in enumerate(sections):
+                                if section.strip():
+                                    if i == 0 or len(section) < 200:
+                                        # First section or short sections as thinking steps
+                                        thinking_steps.append({
+                                            "content": section.strip(),
+                                            "timestamp": msg_timestamp
+                                        })
+                                    else:
+                                        # Longer sections as messages
+                                        formatted_messages.append({
+                                            "content": section.strip(),
+                                            "role": "assistant",
+                                            "timestamp": msg_timestamp,
+                                            "type": "devin_analysis_section"
+                                        })
                         else:
-                            # Longer messages or final responses are treated as messages
+                            # Regular messages
                             formatted_messages.append({
                                 "content": msg_content,
                                 "role": "assistant",
@@ -284,22 +321,43 @@ Please implement this solution and create a pull request with the changes. Inclu
                             "type": "user_request"
                         })
             
-            # If no thinking steps were identified but we have devin messages, 
-            # use the shorter ones as thinking steps
-            if not thinking_steps and len(formatted_messages) > 1:
-                # Move shorter devin messages to thinking steps
-                messages_to_keep = []
-                for msg in formatted_messages:
-                    if (msg["role"] == "assistant" and 
-                        len(msg["content"]) < 300 and
-                        msg != formatted_messages[-1]):  # Keep the last message as the main response
-                        thinking_steps.append({
-                            "content": msg["content"],
-                            "timestamp": msg["timestamp"]
-                        })
-                    else:
-                        messages_to_keep.append(msg)
-                formatted_messages = messages_to_keep
+            # If we still don't have thinking steps, create them from message sections
+            if not thinking_steps and formatted_messages:
+                # Look for structured content in the messages and break it down
+                for msg in formatted_messages[:]:  # Copy list to modify during iteration
+                    content = msg["content"]
+                    
+                    # If this is a long structured message, break it into thinking steps
+                    if len(content) > 500 and any(marker in content for marker in ["###", "**", "Phase", "Step"]):
+                        # Remove from messages and break into thinking steps
+                        formatted_messages.remove(msg)
+                        
+                        # Split on section markers
+                        sections = []
+                        for delimiter in ['\n###', '\n**', '\nPhase', '\nStep']:
+                            if delimiter in content:
+                                sections = content.split(delimiter)
+                                break
+                        
+                        if not sections:
+                            sections = [content]
+                        
+                        # Add sections as thinking steps (except the first if it's just a title)
+                        for i, section in enumerate(sections):
+                            if section.strip():
+                                clean_section = section.strip()
+                                if len(clean_section) > 20:  # Skip very short sections
+                                    thinking_steps.append({
+                                        "content": clean_section,
+                                        "timestamp": msg["timestamp"]
+                                    })
+                
+                # If we still don't have thinking steps, create one from the analysis flow
+                if not thinking_steps and formatted_messages:
+                    thinking_steps.append({
+                        "content": "Analyzing GitHub issue and generating comprehensive implementation plan...",
+                        "timestamp": formatted_messages[0]["timestamp"] if formatted_messages else ""
+                    })
             
             progress = session_data.get("progress", {})
             
@@ -397,51 +455,94 @@ Please implement this solution and create a pull request with the changes. Inclu
             except ValueError:
                 pass
 
-        # Extract summary section
-        # Look for "1. Summary" or "Summary" header followed by content
-        summary_match = re.search(r'(?:^|\n)(?:\d+\.\s*)?summary[:\s]*\n(.+?)(?=\n\d+\.|$)', text, re.IGNORECASE | re.DOTALL)
+        # Extract summary section - look for comprehensive summary
+        # Pattern 1: Look for "## 1. Summary" or "### 1. Summary" with detailed content
+        summary_match = re.search(r'(?:^|\n)#+\s*(?:\d+\.\s*)?summary[:\s]*\n(.*?)(?=\n#+|\n## \d+\.|\n### \d+\.)', text, re.IGNORECASE | re.DOTALL)
         if summary_match:
             summary_text = summary_match.group(1).strip()
-            # Take first paragraph or first 500 chars
-            first_para = summary_text.split('\n\n')[0] if '\n\n' in summary_text else summary_text
-            parsed["summary"] = first_para[:500].strip()
-            logger.info(f"Extracted summary: {parsed['summary'][:100]}...")
+            # Take the full summary content, not just first paragraph
+            parsed["summary"] = summary_text[:800].strip()  # Increased limit for detailed summaries
+            logger.info(f"Extracted detailed summary: {parsed['summary'][:100]}...")
         else:
-            # Fallback: Look for any paragraph after the title
-            lines = text.strip().split('\n')
-            if len(lines) > 2:
-                # Skip title/header lines and get first meaningful content
-                for i, line in enumerate(lines[1:], 1):  # Skip first line
-                    if line.strip() and not re.match(r'^\d+\.', line.strip()) and len(line.strip()) > 50:
-                        parsed["summary"] = line.strip()
-                        logger.info(f"Using fallback summary: {parsed['summary'][:100]}...")
-                        break
-                if not parsed["summary"] and len(text) > 100:
-                    parsed["summary"] = text[:500].strip()
+            # Pattern 2: Look for "Summary:" followed by content
+            simple_summary_match = re.search(r'(?:^|\n)(?:\d+\.\s*)?summary[:\s]*\n(.+?)(?=\n\d+\.|$)', text, re.IGNORECASE | re.DOTALL)
+            if simple_summary_match:
+                summary_text = simple_summary_match.group(1).strip()
+                # Take first meaningful section 
+                sections = summary_text.split('\n\n')
+                if len(sections) > 1:
+                    # Combine first few sections for comprehensive summary
+                    combined_summary = '\n\n'.join(sections[:3])  # Take first 3 sections
+                    parsed["summary"] = combined_summary[:800].strip()
+                else:
+                    parsed["summary"] = summary_text[:500].strip()
+                logger.info(f"Extracted simple summary: {parsed['summary'][:100]}...")
+            else:
+                # Fallback: Look for any meaningful content after analysis title
+                lines = text.strip().split('\n')
+                if len(lines) > 2:
+                    # Find the first substantial paragraph
+                    for i, line in enumerate(lines[1:], 1):  # Skip first line
+                        if line.strip() and not re.match(r'^\d+\.', line.strip()) and len(line.strip()) > 50:
+                            # Check if this looks like analysis content
+                            if any(keyword in line.lower() for keyword in ['framework', 'api', 'documentation', 'endpoints', 'task involves']):
+                                parsed["summary"] = line.strip()
+                                logger.info(f"Using content-based summary: {parsed['summary'][:100]}...")
+                                break
+                    if not parsed["summary"] and len(text) > 100:
+                        parsed["summary"] = text[:500].strip()
 
-        # Extract steps from various formats
-        # Pattern 1: "Phase N: Title" followed by substeps
-        phase_matches = re.findall(r'Phase\s+\d+:\s*([^\n]+)', text, re.IGNORECASE)
+        # Extract steps from various formats - prioritize main phases over detailed sub-steps
+        # Pattern 1: Direct "Phase N: Title" matches - highest priority for implementation phases
+        phase_matches = re.findall(r'(?:^|\n)#{1,4}\s*Phase\s+\d+:\s*([^\n]+)', text, re.IGNORECASE | re.MULTILINE)
         if phase_matches and len(phase_matches) >= 3:
             parsed["steps"] = phase_matches
-            logger.info(f"Extracted {len(parsed['steps'])} steps from phases")
+            logger.info(f"Extracted {len(parsed['steps'])} main phases from headers")
         else:
-            # Pattern 2: Numbered list "1. Step" or "Step 1:"
-            step_patterns = [
-                r'(?:^|\n)(?:Step\s+)?(\d+)\.\s*([^\n]+)',  # "1. Step" or "Step 1. Description"
-                r'(?:^|\n)-\s*([^\n]+)',  # "- Step"
-            ]
+            # Pattern 2: Look for phases in bullet points or numbered lists
+            phase_in_text = re.findall(r'(?:^|\n)[*\-]?\s*(?:\d+\.\s*)?(?:Phase\s+\d+:\s*)?([^(\n]*\([Dd]ays?\s+\d+[^\)]*\))', text, re.MULTILINE)
+            if phase_in_text and len(phase_in_text) >= 3:
+                # Clean up the phase descriptions
+                cleaned_phases = []
+                for phase in phase_in_text:
+                    clean_phase = re.sub(r'^\**\s*', '', phase.strip())  # Remove leading asterisks
+                    if len(clean_phase) > 10 and 'day' in clean_phase.lower():  # Ensure it's a meaningful phase with duration
+                        cleaned_phases.append(clean_phase)
+                
+                if len(cleaned_phases) >= 3:
+                    parsed["steps"] = cleaned_phases
+                    logger.info(f"Extracted {len(parsed['steps'])} implementation phases with durations")
+            
+            # Pattern 3: Look for main section headers as phases (avoid detailed sub-steps)
+            if not parsed["steps"]:
+                section_headers = re.findall(r'(?:^|\n)###?\s+([^:\n]*(?:Generation|Documentation|Guides|SDK|Infrastructure)[^\n]*)', text, re.IGNORECASE | re.MULTILINE)
+                if section_headers and len(section_headers) >= 3:
+                    parsed["steps"] = section_headers
+                    logger.info(f"Extracted {len(parsed['steps'])} main sections as phases")
+            
+            # Pattern 4: Generic numbered patterns (heavily filtered to avoid sub-steps)
+            if not parsed["steps"]:
+                step_patterns = [
+                    r'(?:^|\n)(\d+)\.\s*([^\n]+)',  # "1. Step"
+                ]
 
-            for pattern in step_patterns:
-                matches = re.findall(pattern, text, re.MULTILINE)
-                if matches and len(matches) >= 3:
-                    if isinstance(matches[0], tuple):
-                        # Extract description part (second group)
-                        parsed["steps"] = [match[1] if len(match) > 1 else match[0] for match in matches]
-                    else:
-                        parsed["steps"] = matches
-                    logger.info(f"Extracted {len(parsed['steps'])} steps using pattern")
-                    break
+                for pattern in step_patterns:
+                    matches = re.findall(pattern, text, re.MULTILINE)
+                    if matches and len(matches) >= 3:
+                        # Heavy filtering - only keep high-level implementation steps
+                        filtered_matches = []
+                        for match in matches:
+                            match_text = match[1] if len(match) > 1 else match[0]
+                            # Only include if it looks like a main phase, not a detailed sub-step
+                            if (any(keyword in match_text.lower() for keyword in ['specification', 'documentation', 'guides', 'sdk', 'infrastructure', 'openapi', 'interactive']) and
+                                not any(skip_keyword in match_text.lower() for skip_keyword in ['step 1.', 'step 2.', 'add swagger', 'define schemas', 'tutorial 1', 'example 1', 'documented in openapi', 'accessible and functional'])):
+                                filtered_matches.append(match)
+                        
+                        # Only use if we get a reasonable number of main phases (3-10)
+                        if 3 <= len(filtered_matches) <= 10:
+                            parsed["steps"] = [match[1] if len(match) > 1 else match[0] for match in filtered_matches]
+                            logger.info(f"Extracted {len(parsed['steps'])} main phases using heavily filtered pattern")
+                            break
 
         return parsed
 
@@ -482,41 +583,98 @@ Please implement this solution and create a pull request with the changes. Inclu
         Returns:
             Structured analysis
         """
-        logger.info(f"Parsing Devin session result. Full session data: {session}")
+        import json
+        logger.info(f"Parsing Devin session result. Full session data keys: {list(session.keys())}")
 
-        result = session.get("result", {})
+        # Extract the actual response from Devin
+        actual_response = self._extract_devin_response(session)
+        
+        if actual_response:
+            logger.info(f"Devin response preview: {str(actual_response)[:200]}...")
+            
+            # First, try to parse as JSON (new structured format)
+            try:
+                # Clean the response - sometimes Devin adds markdown formatting
+                cleaned_response = actual_response.strip()
+                if cleaned_response.startswith("```json"):
+                    cleaned_response = cleaned_response[7:]  # Remove ```json
+                if cleaned_response.endswith("```"):
+                    cleaned_response = cleaned_response[:-3]  # Remove ```
+                cleaned_response = cleaned_response.strip()
+                
+                parsed_json = json.loads(cleaned_response)
+                logger.info("Successfully parsed Devin response as JSON")
+                
+                return {
+                    "session_id": session_id,
+                    "summary": parsed_json.get("summary", ""),
+                    "detailed_analysis": parsed_json.get("detailed_analysis", ""),
+                    "confidence": parsed_json.get("confidence", self._calculate_confidence_heuristic(issue)),
+                    "confidence_reasoning": parsed_json.get("confidence_reasoning", ""),
+                    "steps": parsed_json.get("implementation_steps", []),
+                    "complexity": parsed_json.get("complexity", "Medium"),
+                    "potential_challenges": parsed_json.get("potential_challenges", []),
+                    "success_criteria": parsed_json.get("success_criteria", []),
+                    "status": session.get("status", "completed")
+                }
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse Devin response as JSON: {str(e)}")
+                logger.info("Falling back to text parsing")
+                
+                # Fallback: Parse as text using the old method
+                parsed_data = self._parse_devin_text_response(actual_response)
+                
+                return {
+                    "session_id": session_id,
+                    "summary": parsed_data.get("summary", actual_response[:500]),
+                    "detailed_analysis": "",
+                    "confidence": parsed_data.get("confidence", self._calculate_confidence_heuristic(issue)),
+                    "confidence_reasoning": "",
+                    "steps": parsed_data.get("steps", self._get_fallback_steps()),
+                    "complexity": "Medium",
+                    "potential_challenges": [],
+                    "success_criteria": [],
+                    "status": session.get("status", "completed")
+                }
+        else:
+            # No response found - return fallback
+            logger.warning("No Devin response found, using fallback analysis")
+            return {
+                "session_id": session_id,
+                "summary": "Analysis in progress - Devin has not provided output yet",
+                "detailed_analysis": "",
+                "confidence": self._calculate_confidence_heuristic(issue),
+                "confidence_reasoning": "Based on issue characteristics and labels",
+                "steps": self._get_fallback_steps(),
+                "complexity": "Medium",
+                "potential_challenges": [],
+                "success_criteria": [],
+                "status": session.get("status", "running")
+            }
 
-        # Try to extract actual response from various possible fields
-        actual_response = None
-
+    def _extract_devin_response(self, session: Dict[str, Any]) -> str:
+        """Extract Devin's response from various possible locations in the session data"""
+        
         # Check common response fields at various levels
         response_fields = ["output", "response", "message", "text", "content", "body", "data", "answer", "completion"]
 
         # Check top-level session fields
         for field in response_fields:
             if field in session and session[field]:
-                actual_response = session[field]
                 logger.info(f"Found Devin response in session.{field}")
-                break
+                return str(session[field])
 
-        # Check result sub-object if not found
-        if not actual_response and result:
+        # Check result sub-object if present
+        result = session.get("result", {})
+        if result:
             for field in response_fields:
                 if field in result and result[field]:
-                    actual_response = result[field]
                     logger.info(f"Found Devin response in result.{field}")
-                    break
-
-        # Check nested data field
-        if not actual_response and "data" in session and isinstance(session["data"], dict):
-            for field in response_fields:
-                if field in session["data"] and session["data"][field]:
-                    actual_response = session["data"][field]
-                    logger.info(f"Found Devin response in data.{field}")
-                    break
+                    return str(result[field])
 
         # Check messages array for devin_message entries
-        if not actual_response and "messages" in session and isinstance(session["messages"], list):
+        if "messages" in session and isinstance(session["messages"], list):
             logger.info(f"Looking for Devin responses in messages array with {len(session['messages'])} messages")
             devin_messages = []
             for msg in session["messages"]:
@@ -535,106 +693,32 @@ Please implement this solution and create a pull request with the changes. Inclu
                         logger.info(f"Found devin message: {message_content[:100]}...")
             
             if devin_messages:
-                # Combine all devin messages, with the last one typically being the most comprehensive
-                actual_response = "\n\n".join(devin_messages)
-                logger.info(f"Combined {len(devin_messages)} devin_message(s) into response")
+                # Use the last message which is typically the most complete
+                return devin_messages[-1]
 
-        # Check messages array in raw_data (fallback for streaming data)
-        if not actual_response and "raw_data" in session and "messages" in session["raw_data"]:
+        # Check raw_data messages array (fallback)
+        if "raw_data" in session and "messages" in session["raw_data"]:
             raw_messages = session["raw_data"]["messages"]
             logger.info(f"Checking raw_data messages array with {len(raw_messages)} messages")
-            devin_messages = []
             for msg in raw_messages:
                 if isinstance(msg, dict) and msg.get("type") == "devin_message":
                     message_content = msg.get("message", "")
                     if message_content:
-                        devin_messages.append(message_content)
                         logger.info(f"Found raw devin_message: {message_content[:100]}...")
-            
-            if devin_messages:
-                actual_response = "\n\n".join(devin_messages)
-                logger.info(f"Combined {len(devin_messages)} raw devin_message(s) into response")
+                        return message_content
 
-        # Log what we found
-        if actual_response:
-            logger.info(f"Devin response preview: {str(actual_response)[:200]}...")
-        else:
-            logger.warning(f"No Devin response found. Available session keys: {list(session.keys())}")
-            if result:
-                logger.warning(f"Available result keys: {list(result.keys())}")
+        logger.warning(f"No Devin response found. Available session keys: {list(session.keys())}")
+        return None
 
-        # Extract structured data if provided in result
-        summary = result.get("summary")
-        confidence = result.get("confidence")
-        steps = result.get("steps")
-
-        # If we have actual response text, parse it to extract structured data
-        if actual_response and isinstance(actual_response, str):
-            logger.info("Parsing Devin text response to extract structured data")
-            parsed_data = self._parse_devin_text_response(actual_response)
-
-            # Use parsed data if we don't have structured data already
-            if not summary and parsed_data.get("summary"):
-                summary = parsed_data["summary"]
-                logger.info(f"Using parsed summary from Devin response")
-
-            if not confidence and parsed_data.get("confidence"):
-                confidence = parsed_data["confidence"]
-                logger.info(f"Using parsed confidence from Devin response: {confidence}")
-
-            if (not steps or len(steps) == 0) and parsed_data.get("steps"):
-                steps = parsed_data["steps"]
-                logger.info(f"Using parsed steps from Devin response: {len(steps)} steps")
-
-            # If summary is still empty after parsing, use the full response
-            if not summary:
-                summary = str(actual_response)
-                logger.info(f"Using full Devin response as summary")
-
-        # Fall back to default summary only if no content at all
-        if not summary:
-            summary = "Analysis in progress - Devin has not provided output yet"
-            logger.warning(f"No summary found in Devin response")
-
-        # Use heuristic-based confidence if Devin doesn't provide one
-        if not confidence:
-            confidence = self._calculate_confidence_heuristic(issue)
-            logger.info(f"Using heuristic confidence: {confidence}")
-
-        # Only use generic steps if Devin didn't provide any
-        if not steps or len(steps) == 0:
-            logger.warning(f"No steps found in Devin response - using generic fallback")
-            steps = [
-                "Review the issue requirements",
-                "Identify affected files",
-                "Implement the necessary changes",
-                "Add tests for the changes",
-                "Update documentation if needed"
-            ]
-        else:
-            logger.info(f"Using Devin-provided steps: {steps}")
-
-        parsed_result = {
-            "session_id": session_id,
-            "summary": summary,
-            "confidence": confidence,
-            "steps": steps,
-            "status": session.get("status", "completed")
-        }
-
-        # Include raw response if available for debugging
-        if actual_response:
-            parsed_result["devin_raw_response"] = str(actual_response)[:1000]  # Truncate for logging
-
-        # Log the final parsed result (without full raw response to keep logs clean)
-        logger.info(f"Successfully parsed Devin analysis:")
-        logger.info(f"  - Status: {parsed_result['status']}")
-        logger.info(f"  - Summary length: {len(summary) if summary else 0} chars")
-        logger.info(f"  - Confidence: {confidence}")
-        logger.info(f"  - Steps count: {len(steps) if steps else 0}")
-        logger.info(f"  - Has raw response: {bool(actual_response)}")
-
-        return parsed_result
+    def _get_fallback_steps(self) -> List[str]:
+        """Get generic fallback steps when Devin doesn't provide specific ones"""
+        return [
+            "Review the issue requirements in detail",
+            "Identify affected files and components",
+            "Implement the necessary changes",
+            "Add tests for the changes",
+            "Update documentation if needed"
+        ]
     
     def _create_fallback_analysis(self, issue: Dict[str, Any], error: str) -> Dict[str, Any]:
         """

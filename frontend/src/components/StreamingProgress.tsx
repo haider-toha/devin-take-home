@@ -158,20 +158,25 @@ export default function StreamingProgress({ sessionId, onComplete, title = "Devi
 
       {/* Content */}
       <div className="max-h-96 overflow-y-auto">
-        {/* Thinking Steps */}
+        {/* Thinking Steps with enhanced styling */}
         {thinkingSteps.map((step, index) => (
-          <div key={index} className="border-b border-gray-100 px-4 py-3">
+          <div key={index} className="border-b border-gray-100 px-4 py-3 animate-fadeIn">
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 w-6 h-6 bg-purple-100 rounded-full flex items-center justify-center">
                 <span className="text-xs font-medium text-purple-600">💭</span>
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-purple-600">Thinking</span>
+                  <span className="text-xs font-medium text-purple-600">
+                    {step.content.includes('Phase') || step.content.includes('Step') ? 'Planning' : 'Thinking'}
+                  </span>
                   {step.timestamp && (
                     <span className="text-xs text-gray-400">
                       {formatTimestamp(step.timestamp)}
                     </span>
+                  )}
+                  {index === thinkingSteps.length - 1 && !isCompleted && (
+                    <div className="animate-pulse w-2 h-2 bg-purple-400 rounded-full ml-2"></div>
                   )}
                 </div>
                 <p className="text-sm text-gray-700 whitespace-pre-wrap">{step.content}</p>
@@ -180,9 +185,9 @@ export default function StreamingProgress({ sessionId, onComplete, title = "Devi
           </div>
         ))}
 
-        {/* Messages */}
+        {/* Messages with enhanced styling and typing indicators */}
         {messages.map((message, index) => (
-          <div key={index} className="border-b border-gray-100 px-4 py-3">
+          <div key={index} className="border-b border-gray-100 px-4 py-3 animate-fadeIn">
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
                 <span className="text-xs font-medium text-blue-600">
@@ -192,28 +197,53 @@ export default function StreamingProgress({ sessionId, onComplete, title = "Devi
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-xs font-medium text-blue-600 capitalize">
-                    {message.role || 'System'}
+                    {message.role === 'assistant' ? 'Devin' : 'User'}
                   </span>
                   {message.timestamp && (
                     <span className="text-xs text-gray-400">
                       {formatTimestamp(message.timestamp)}
                     </span>
                   )}
+                  {index === messages.length - 1 && message.role === 'assistant' && !isCompleted && (
+                    <div className="flex items-center gap-1 ml-2">
+                      <div className="animate-bounce w-1 h-1 bg-blue-400 rounded-full" style={{animationDelay: '0ms'}}></div>
+                      <div className="animate-bounce w-1 h-1 bg-blue-400 rounded-full" style={{animationDelay: '150ms'}}></div>
+                      <div className="animate-bounce w-1 h-1 bg-blue-400 rounded-full" style={{animationDelay: '300ms'}}></div>
+                    </div>
+                  )}
                 </div>
-                <p className="text-sm text-gray-700 whitespace-pre-wrap">{message.content}</p>
+                <div className="text-sm text-gray-700 whitespace-pre-wrap">
+                  {message.content}
+                </div>
               </div>
             </div>
           </div>
         ))}
 
-        {/* Loading state */}
+        {/* Loading state with enhanced progress indicators */}
         {!isCompleted && !error && thinkingSteps.length === 0 && messages.length === 0 && !isConnecting && (
           <div className="px-4 py-8 text-center">
             <div className="animate-pulse">
-              <div className="inline-flex items-center gap-2 text-sm text-gray-500">
+              <div className="inline-flex items-center gap-2 text-sm text-gray-500 mb-4">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
                 Waiting for Devin to start...
               </div>
+              <div className="text-xs text-gray-400">
+                {title.includes('Analyzing') 
+                  ? 'Devin is reading the issue and planning the analysis...'
+                  : 'Devin is preparing to implement the solution...'
+                }
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Connection state indicator */}
+        {isConnecting && (
+          <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
+            <div className="flex items-center gap-2 text-sm text-blue-600">
+              <div className="animate-pulse w-2 h-2 bg-blue-500 rounded-full"></div>
+              <span>Connecting to Devin session...</span>
             </div>
           </div>
         )}

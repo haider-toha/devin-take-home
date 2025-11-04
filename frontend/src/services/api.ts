@@ -32,10 +32,16 @@ export interface GitHubIssue {
 export interface Analysis {
   session_id: string
   summary: string
+  detailed_analysis?: string
   confidence: number
+  confidence_reasoning?: string
   steps: string[]
+  complexity?: string
+  potential_challenges?: string[]
+  success_criteria?: string[]
   status: string
   note?: string
+  session_url?: string
 }
 
 export interface Execution {

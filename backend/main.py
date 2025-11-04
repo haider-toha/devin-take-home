@@ -144,19 +144,19 @@ async def get_issue(issue_number: int):
 @app.post("/api/analyze/{issue_number}")
 async def analyze_issue(issue_number: int, post_comment: bool = True):
     """
-    Analyze a GitHub issue using Devin AI
+    Analyze a GitHub issue using Devin AI - Synchronous, no streaming
     
     Args:
         issue_number: The issue number to analyze
         post_comment: Whether to post the analysis as a comment on GitHub
     """
     try:
-        logger.info(f"Starting analysis for issue #{issue_number}")
+        logger.info(f"Starting synchronous analysis for issue #{issue_number}")
         
         # Fetch the issue
         issue = github_service.get_issue(issue_number)
         
-        # Create Devin analysis session
+        # Create Devin analysis session and wait for completion
         analysis = devin_service.create_analysis_session(issue)
         
         # Store the result
@@ -165,11 +165,15 @@ async def analyze_issue(issue_number: int, post_comment: bool = True):
         issue_results[issue_number]["analysis"] = analysis
         issue_results[issue_number]["issue"] = issue
 
-        logger.info(f"Stored analysis for issue #{issue_number}:")
+        logger.info(f"Analysis completed for issue #{issue_number}:")
         logger.info(f"  - Status: {analysis.get('status')}")
-        logger.info(f"  - Summary: {analysis.get('summary', '')[:100]}...")
+        logger.info(f"  - Summary length: {len(analysis.get('summary', ''))}")
         logger.info(f"  - Confidence: {analysis.get('confidence')}")
         logger.info(f"  - Steps count: {len(analysis.get('steps', []))}")
+        
+        # Always include session_url for debugging if available
+        if "session_id" in analysis and analysis["session_id"] != "fallback-session":
+            analysis["session_url"] = f"https://app.devin.ai/sessions/{analysis['session_id']}"
 
         # Post comment to GitHub if requested
         if post_comment and analysis.get("status") == "completed":
@@ -180,7 +184,7 @@ async def analyze_issue(issue_number: int, post_comment: bool = True):
             except Exception as e:
                 logger.warning(f"Failed to post comment: {str(e)}")
 
-        logger.info(f"Returning analysis response for issue #{issue_number}")
+        logger.info(f"Returning complete analysis response for issue #{issue_number}")
         return {
             "success": True,
             "issue_number": issue_number,
@@ -283,8 +287,8 @@ async def stream_session_updates(session_id: str):
                         status_enum in ["completed", "success", "done", "finished", "blocked", "failed", "error", "cancelled", "canceled"]):
                         session_completed = True
                     
-                    # Send new messages
-                    if len(messages) > last_message_count:
+                    # Send new messages with pacing
+                    if messages and len(messages) > last_message_count:
                         new_messages = messages[last_message_count:]
                         for message in new_messages:
                             data = {
@@ -293,10 +297,13 @@ async def stream_session_updates(session_id: str):
                                 "timestamp": time.time()
                             }
                             yield f"data: {json.dumps(data)}\n\n"
-                        last_message_count = len(messages)
+                            
+                            # Add delay between messages for better streaming experience
+                            await asyncio.sleep(0.3)
+                        last_message_count = len(messages) if messages else 0
                     
-                    # Send new thinking steps
-                    if len(thinking_steps) > last_thinking_count:
+                    # Send new thinking steps with artificial pacing for better UX
+                    if thinking_steps and len(thinking_steps) > last_thinking_count:
                         new_thinking = thinking_steps[last_thinking_count:]
                         for step in new_thinking:
                             data = {
@@ -305,7 +312,10 @@ async def stream_session_updates(session_id: str):
                                 "timestamp": time.time()
                             }
                             yield f"data: {json.dumps(data)}\n\n"
-                        last_thinking_count = len(thinking_steps)
+                            
+                            # Add small delay between thinking steps for better streaming experience
+                            await asyncio.sleep(0.5)
+                        last_thinking_count = len(thinking_steps) if thinking_steps else 0
                     
                     # Send status update
                     status_data = {
@@ -313,8 +323,8 @@ async def stream_session_updates(session_id: str):
                         "data": {
                             "status": status,
                             "status_enum": status_enum,
-                            "message_count": len(messages),
-                            "thinking_count": len(thinking_steps),
+                            "message_count": len(messages) if messages else 0,
+                            "thinking_count": len(thinking_steps) if thinking_steps else 0,
                             "completed": session_completed
                         },
                         "timestamp": time.time()
@@ -353,8 +363,8 @@ async def stream_session_updates(session_id: str):
                                         "session_id": session_id,
                                         "final_status": status,
                                         "final_status_enum": status_enum,
-                                        "total_messages": len(messages),
-                                        "total_thinking_steps": len(thinking_steps),
+                                        "total_messages": len(messages) if messages else 0,
+                                        "total_thinking_steps": len(thinking_steps) if thinking_steps else 0,
                                         "updated_analysis": {
                                             "summary": updated_analysis.get("summary", "")[:200] + "..." if len(updated_analysis.get("summary", "")) > 200 else updated_analysis.get("summary", ""),
                                             "confidence": updated_analysis.get("confidence"),
@@ -371,8 +381,8 @@ async def stream_session_updates(session_id: str):
                                         "session_id": session_id,
                                         "final_status": status,
                                         "final_status_enum": status_enum,
-                                        "total_messages": len(messages),
-                                        "total_thinking_steps": len(thinking_steps)
+                                        "total_messages": len(messages) if messages else 0,
+                                        "total_thinking_steps": len(thinking_steps) if thinking_steps else 0
                                     },
                                     "timestamp": time.time()
                                 }
@@ -385,8 +395,8 @@ async def stream_session_updates(session_id: str):
                                     "session_id": session_id,
                                     "final_status": status,
                                     "final_status_enum": status_enum,
-                                    "total_messages": len(messages),
-                                    "total_thinking_steps": len(thinking_steps)
+                                    "total_messages": len(messages) if messages else 0,
+                                    "total_thinking_steps": len(thinking_steps) if thinking_steps else 0
                                 },
                                 "timestamp": time.time()
                             }
@@ -395,8 +405,8 @@ async def stream_session_updates(session_id: str):
                         logger.info(f"Session {session_id} completed, ending stream")
                         break
                     
-                    # Wait before next poll
-                    await asyncio.sleep(2)
+                    # Use shorter polling interval for more responsive streaming
+                    await asyncio.sleep(1)
                     
                 except Exception as e:
                     logger.error(f"Error in session stream: {str(e)}")
