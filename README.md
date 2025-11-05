@@ -40,7 +40,7 @@ The Devin Issue Assistant streamlines issue resolution for engineering teams by:
 
 ### System Overview
 
-```
+```mermaid
 flowchart TB
     User[User / Engineer]
     Frontend[FRONTEND LAYER<br/>React 18 + TypeScript + Vite + Tailwind CSS<br/>Port: 5173]
