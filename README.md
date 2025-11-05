@@ -98,70 +98,35 @@ graph LR
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Frontend
-    participant Backend
-    participant GitHub
-    participant Devin
+    autonumber
+    participant Eng as Engineer
+    participant FE as Frontend
+    participant BE as Backend
+    participant AI as Devin
+    participant GH as GitHub
 
-    User->>Frontend: Click "Analyze with Devin"
-    Frontend->>Backend: POST /api/analyze/{issue_number}
+    Eng->>FE: Click "Analyze & Implement"
+    FE->>BE: POST /api/analyze/123
+    BE->>GH: Get issue #123 details
+    GH-->>BE: Issue data
 
-    Backend->>GitHub: GET /repos/{owner}/{repo}/issues/{number}
-    GitHub-->>Backend: Issue data (title, body, labels)
-
-    Backend->>Devin: POST /v1/sessions<br/>(Create analysis session)
-    Devin-->>Backend: session_id
-
-    loop Poll every 5s (max 300s)
-        Backend->>Devin: GET /sessions/{session_id}?include_messages=true
-        Devin-->>Backend: status, messages, thinking_steps
-        alt Status is completed
-            Backend->>Backend: Parse response (JSON/Text)
-            Backend->>Backend: Extract summary, confidence, steps
-        end
-    end
-
-    alt post_comment=true
-        Backend->>GitHub: POST /issues/{number}/comments<br/>(Post analysis as comment)
-        GitHub-->>Backend: comment_id
-    end
-
-    Backend-->>Frontend: Analysis result
-    Frontend-->>User: Display AnalysisPanel
-```
-
-#### Unified Analysis + Implementation Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Frontend
-    participant Backend
-    participant Devin
-    participant GitHub
-
-    User->>Frontend: Click "Analyze & Implement"
-    Frontend->>Backend: POST /api/analyze/{issue_number}?unified=true
-
-    Backend->>Devin: POST /v1/sessions<br/>(Unified session: analyze + implement)
-    Devin-->>Backend: session_id
+    BE->>AI: Analyze issue and implement fix
+    Note over BE,AI: Instructions: analyze → implement → create PR
+    AI-->>BE: Confirm task started
 
     loop Poll every 10s (max 900s)
-        Backend->>Devin: GET /sessions/{session_id}
-        Devin-->>Backend: status, output
-
-        alt Status is running
-            Devin->>GitHub: (Autonomous) Clone repo, make changes
-            Devin->>GitHub: (Autonomous) Create PR
+        BE->>AI: Check status
+        alt Running
+            AI->>AI: Analyze requirements & modify code
+            AI->>GH: Push changes and create PR #45
         end
     end
 
-    Backend->>Backend: Extract PR URL from response
-    Backend->>GitHub: POST /issues/{number}/comments<br/>(Post analysis + PR link)
+    AI-->>BE: Completed with PR #45
+    BE->>GH: Comment on issue: "PR created: #45"
+    BE-->>FE: Return analysis + PR info
+    FE->>Eng: Display PR link and summary
 
-    Backend-->>Frontend: Analysis + execution result
-    Frontend-->>User: Display PR link
 ```
 
 #### Loading Screen Flow
@@ -307,11 +272,6 @@ class Settings:
    - Timeout: 900 seconds (15 minutes)
    - Polling interval: 10 seconds
    - Output: Analysis + PR link extraction
-
-3. **Execution Session**: Implement previously analyzed issue
-   - Timeout: 600 seconds (10 minutes)
-   - Polling interval: 5 seconds
-   - Output: Implementation status + PR link
 
 **Session Creation:**
 ```python
