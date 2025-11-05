@@ -268,7 +268,7 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
           </a>
         </div>
 
-        {/* Streaming Progress */}
+        {/* Loading Screen */}
         {loadingSessionId && loadingType && (
           <div className="mt-6">
             <SimpleLoadingScreen 

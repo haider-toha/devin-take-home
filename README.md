@@ -24,7 +24,7 @@ The Devin Issue Assistant enables engineering teams to:
 - **List GitHub issues** from any repository with filtering and sorting
 - **Analyze issues with Devin AI** to generate confidence scores and detailed implementation plans
 - **Execute solutions** automatically using Devin's autonomous capabilities
-- **Track progress** in real-time with streaming updates and session monitoring
+- **Track progress** with clean loading screens and session monitoring
 - **Maintain context** with automatic GitHub comment posting and in-memory result caching
 
 ## Architecture
@@ -77,9 +77,8 @@ graph TD
     B --> D[IssueList.tsx<br/>Issue Manager]
     D --> E[IssueCard.tsx<br/>Individual Issue]
     E --> F[AnalysisPanel.tsx<br/>Analysis Results]
-    E --> G[SimpleLoadingScreen.tsx<br/>Polling Progress]
-    E --> H[StreamingProgress.tsx<br/>SSE Real-time Updates]
-    F --> I[ConfidenceBar.tsx<br/>Visual Score Display]
+    E --> G[SimpleLoadingScreen.tsx<br/>Static Loading Screen]
+    F --> H[ConfidenceBar.tsx<br/>Visual Score Display]
 
     style B fill:#4a90e2
     style D fill:#50c878
@@ -181,7 +180,7 @@ sequenceDiagram
     Frontend-->>User: Display PR link
 ```
 
-#### Real-time Streaming Flow
+#### Loading Screen Flow
 
 ```mermaid
 sequenceDiagram
@@ -189,28 +188,23 @@ sequenceDiagram
     participant Backend
     participant Devin
 
-    Frontend->>Backend: GET /api/sessions/{session_id}/stream<br/>(Server-Sent Events)
+    Frontend->>Backend: POST /api/analyze/{issue_number}
+    Backend->>Devin: Create analysis session
+    Backend-->>Frontend: Session ID (for polling)
+    Frontend->>Frontend: Show SimpleLoadingScreen
 
     loop While session is running
-        Backend->>Devin: GET /sessions/{session_id}?include_messages=true&include_thinking=true
-        Devin-->>Backend: messages[], thinking_steps[], status
+        Frontend->>Backend: GET /api/sessions/{session_id}
+        Backend->>Devin: GET /sessions/{session_id}
+        Devin-->>Backend: status, messages, analysis
+        Backend-->>Frontend: Session status
 
-        Backend->>Backend: Process new messages
-        Backend->>Backend: Categorize: thinking vs response
-
-        Backend-->>Frontend: SSE: data: {type: "thinking", content: "..."}
-        Frontend->>Frontend: Display in StreamingProgress
-
-        Backend-->>Frontend: SSE: data: {type: "message", content: "..."}
-        Frontend->>Frontend: Append to message list
-
-        Backend-->>Frontend: SSE: data: {type: "status", status: "running"}
-        Frontend->>Frontend: Update status indicator
+        alt Session completed
+            Frontend->>Frontend: Hide loading, show analysis
+        else Session still running
+            Frontend->>Frontend: Continue showing loading
+        end
     end
-
-    Backend-->>Frontend: SSE: data: {type: "complete", analysis: {...}}
-    Frontend->>Frontend: Re-parse final analysis
-    Frontend->>Frontend: Display AnalysisPanel
 ```
 
 ## Technical Implementation
@@ -228,9 +222,8 @@ sequenceDiagram
 
 **Key Design Decisions:**
 1. **In-memory storage**: Fast access, acceptable for demo/single-instance deployment
-2. **Synchronous polling**: Waits for Devin completion before returning (simpler than webhooks)
-3. **Optional streaming**: SSE endpoint for real-time updates as alternative to polling
-4. **Fallback analysis**: Heuristic-based responses when Devin API unavailable
+2. **Static loading screens**: Simple polling for completion status (reliable and debuggable)
+3. **Fallback analysis**: Heuristic-based responses when Devin API unavailable
 
 **API Endpoints:**
 ```python
@@ -250,7 +243,6 @@ POST /api/execute/{number}  # Implement previously analyzed issue
 
 # Session Monitoring
 GET  /api/sessions/{id}        # Get session status
-GET  /api/sessions/{id}/stream # SSE real-time updates
 
 # History
 GET  /api/history         # All cached results
@@ -414,43 +406,6 @@ def poll_session_status(session_id: str, max_wait: int = 300, poll_interval: int
     return timeout_response(session_id)
 ```
 
-**Streaming Implementation:**
-```python
-async def stream_session_updates(session_id: str):
-    """
-    Server-Sent Events endpoint that streams real-time updates.
-    Polls Devin API every 1 second and yields:
-    - thinking: Short analysis messages
-    - message: Full content blocks
-    - status: Session status updates
-    - complete: Final analysis on completion
-    """
-    seen_message_ids = set()
-    seen_thinking_ids = set()
-
-    while True:
-        session_data = get_session_details(session_id)
-
-        # Stream new thinking steps
-        for thinking in session_data.get("thinking_steps", []):
-            if thinking["id"] not in seen_thinking_ids:
-                yield {"type": "thinking", "content": thinking["text"]}
-                seen_thinking_ids.add(thinking["id"])
-
-        # Stream new messages
-        for message in session_data.get("messages", []):
-            if message["id"] not in seen_message_ids:
-                yield {"type": "message", "content": message["text"]}
-                seen_message_ids.add(message["id"])
-
-        # Check completion
-        if session_data["status"] in COMPLETED_STATES:
-            analysis = extract_and_parse_response(session_data)
-            yield {"type": "complete", "analysis": analysis}
-            break
-
-        await asyncio.sleep(1)
-```
 
 **Fallback Analysis:**
 
@@ -478,7 +433,7 @@ def generate_fallback_analysis(issue_number: int, title: str, labels: list) -> d
 - **Vite**: Fast build tool and dev server
 - **Tailwind CSS**: Utility-first styling
 - **Axios**: HTTP client with interceptors
-- **EventSource**: Native SSE implementation
+- **Polling**: Simple status checking every 3 seconds
 
 #### State Management
 
@@ -554,32 +509,6 @@ useEffect(() => {
 }, [sessionId]);
 ```
 
-**StreamingProgress.tsx** - SSE-based real-time updates
-
-```typescript
-useEffect(() => {
-  const cleanup = api.streamSessionUpdates(
-    sessionId,
-    {
-      onEvent: (event: StreamEvent) => {
-        if (event.type === 'thinking') {
-          setThinkingSteps(prev => [...prev, event.content]);
-        } else if (event.type === 'message') {
-          setMessages(prev => [...prev, event.content]);
-        } else if (event.type === 'complete') {
-          setFinalAnalysis(event.analysis);
-          onComplete?.(event.analysis);
-        }
-      },
-      onError: (error) => {
-        console.error('Streaming error:', error);
-      }
-    }
-  );
-
-  return cleanup; // Close EventSource on unmount
-}, [sessionId]);
-```
 
 **ConfidenceBar.tsx** - Visual confidence display
 
@@ -648,39 +577,6 @@ interface Execution {
 }
 ```
 
-**Streaming Implementation:**
-```typescript
-export function streamSessionUpdates(
-  sessionId: string,
-  callbacks: {
-    onEvent: (event: StreamEvent) => void;
-    onError: (error: Error) => void;
-    onComplete?: () => void;
-  }
-): () => void {
-  const eventSource = new EventSource(
-    `${API_BASE_URL}/sessions/${sessionId}/stream`
-  );
-
-  eventSource.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    callbacks.onEvent(data);
-
-    if (data.type === 'complete') {
-      eventSource.close();
-      callbacks.onComplete?.();
-    }
-  };
-
-  eventSource.onerror = (error) => {
-    callbacks.onError(error);
-    eventSource.close();
-  };
-
-  // Return cleanup function
-  return () => eventSource.close();
-}
-```
 
 ### Integration Layer
 
@@ -979,34 +875,6 @@ GET /api/sessions/{session_id}
 }
 ```
 
-### Stream Session Updates (SSE)
-
-```http
-GET /api/sessions/{session_id}/stream
-```
-
-**Server-Sent Events Format:**
-
-```
-event: message
-data: {"type": "thinking", "content": "Analyzing issue requirements..."}
-
-event: message
-data: {"type": "message", "content": "I've identified the validation bug..."}
-
-event: message
-data: {"type": "status", "status": "running", "progress": 0.45}
-
-event: message
-data: {"type": "complete", "analysis": {...}}
-```
-
-**Event Types:**
-- `thinking`: Short analysis steps (< 300 characters)
-- `message`: Full content blocks
-- `status`: Session status updates
-- `complete`: Final analysis on completion
-
 ### View History
 
 ```http
@@ -1205,13 +1073,7 @@ For faster workflow, use **"Analyze & Implement"** button.
 - Displays type-specific messages (Analyzing, Executing, Implementing)
 - Shows completion and PR link when done
 
-**Option 2: Real-time Streaming (StreamingProgress)**
-- Server-Sent Events connection to `/api/sessions/{id}/stream`
-- Displays thinking steps and messages in real-time
-- Auto-scrolls to latest content
-- Shows animated typing indicators
-
-**Option 3: External Monitoring**
+**Option 2: External Monitoring**
 - Click session URL to view progress in Devin dashboard
 - Monitor Devin's terminal, file changes, and test execution
 - View complete execution history
@@ -1358,23 +1220,23 @@ def cache_analysis(issue_number: int, analysis: dict):
     )
 ```
 
-### Streaming vs. Polling Trade-offs
+### Loading Screen Design
 
-The application supports both approaches:
+The application uses a simple, reliable polling approach:
 
-**Polling (SimpleLoadingScreen):**
-- **Pros**: Simple implementation, no persistent connections, works everywhere
-- **Cons**: Higher latency (3-second intervals), more API calls, no real-time feel
-- **Use Case**: Default for simplicity and reliability
+**SimpleLoadingScreen Features:**
+- **Static loading UI**: Shows animated loading indicators and informative messages  
+- **Polling**: Checks session status every 3 seconds until completion
+- **Smart completion**: Detects when Devin is done and shows results
+- **Error handling**: Displays helpful error messages if something goes wrong
+- **Type-aware messaging**: Different messages for analysis vs execution vs unified tasks
+- **Completion screens**: Success screens with PR links for implementations
 
-**Streaming (StreamingProgress):**
-- **Pros**: Real-time updates, lower latency, better UX, fewer API calls
-- **Cons**: More complex, requires SSE support, connection management, potential firewall issues
-- **Use Case**: Optional for users who want real-time progress
-
-**Implementation Complexity:**
-- Polling: ~50 lines of code
-- Streaming: ~200 lines of code (backend stream processing + frontend SSE handling)
+**Benefits:**
+- Simple and reliable - no connection management complexity
+- Works everywhere - no SSE/firewall concerns  
+- Easy to debug - straightforward request/response cycle
+- Good UX - informative loading states and smooth completion transitions
 
 ### Error Handling Philosophy
 
@@ -1428,7 +1290,7 @@ try {
 - React.memo for expensive components (not currently used, but recommended for scaling)
 - Debouncing for user inputs (not currently needed, but useful for search)
 - Lazy loading for large issue lists (not implemented, suitable for 100+ issues)
-- EventSource cleanup on component unmount (prevents memory leaks)
+- Polling cleanup on component unmount (prevents memory leaks)
 
 **API Rate Limiting:**
 - GitHub: 5000 requests/hour (authenticated)
@@ -1436,7 +1298,7 @@ try {
 
 **Optimization Opportunities:**
 - Add Redis for persistent caching
-- Implement WebSocket instead of SSE for bi-directional communication
+- Implement WebSocket for bi-directional communication (if real-time features needed)
 - Add pagination for issue lists (currently loads all at once)
 - Implement request debouncing on frontend
 - Add service worker for offline support
@@ -1461,8 +1323,7 @@ take-home/
 │   │   │   ├── IssueCard.tsx           # Individual issue display
 │   │   │   ├── AnalysisPanel.tsx       # Analysis results display
 │   │   │   ├── ConfidenceBar.tsx       # Visual confidence indicator
-│   │   │   ├── SimpleLoadingScreen.tsx # Polling-based progress
-│   │   │   └── StreamingProgress.tsx   # SSE-based real-time updates
+│   │   │   └── SimpleLoadingScreen.tsx # Static loading screen with polling
 │   │   ├── services/
 │   │   │   └── api.ts       # API client with TypeScript interfaces
 │   │   ├── App.tsx          # Root component, health check
@@ -1528,11 +1389,11 @@ take-home/
 - Verify CORS origins in `backend/main.py`
 - Clear browser cache and hard reload
 
-### Streaming not working
-- Check browser EventSource support (all modern browsers)
-- Verify SSE endpoint accessible: `curl http://localhost:8000/api/sessions/{id}/stream`
-- Check for proxy/firewall blocking SSE
-- Fall back to polling with SimpleLoadingScreen
+### Loading screen not updating
+- Check that the session ID is valid
+- Verify the backend `/api/sessions/{id}` endpoint is accessible
+- Check browser console for any JavaScript errors
+- Ensure polling is not blocked by network settings
 
 ## Production Deployment
 
@@ -1606,20 +1467,4 @@ Backend logs all API calls and errors to console.
 11. **Multi-Repository Support**: Switch between repositories in UI
 12. **AI Model Selection**: Choose between different AI models
 
-## License
-
-This project is created as a take-home assignment for Cognition Labs.
-
-## Support
-
-For questions or issues:
-- Review API documentation at http://localhost:8000/docs
-- Check backend logs for error details
-- Verify GitHub and Devin API status
-- Review troubleshooting section above
-
 ---
-
-**Built for Cognition Labs Deployed Engineer Take-Home Project**
-
-Haider Syed | 2024
