@@ -12,6 +12,7 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
   const [error, setError] = useState<string | null>(null)
   const [completionData, setCompletionData] = useState<any>(null)
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     if (!sessionId) return
@@ -19,6 +20,19 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
     // Handle cases where we just show loading without polling
     if (sessionId === 'immediate-completion' || sessionId === 'loading') {
       return // Just show loading state, parent component will handle completion
+    }
+
+    // Set timeout based on operation type
+    const getTimeout = () => {
+      switch (type) {
+        case 'analysis':
+          return 300000 // 5 minutes (300 seconds)
+        case 'execution':
+        case 'unified':
+          return 900000 // 15 minutes (900 seconds)
+        default:
+          return 300000
+      }
     }
 
     // Poll for completion every 5 seconds
@@ -35,18 +49,24 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
           setCompletionData(sessionData)
           onComplete?.(sessionId, sessionData)
           
-          // Clear polling
+          // Clear polling and timeout
           if (intervalRef.current) {
             clearInterval(intervalRef.current)
+          }
+          if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current)
           }
         } else if (status === 'failed' || status === 'error' || 
                    statusEnum === 'failed' || statusEnum === 'error') {
           setError('Session failed or encountered an error')
           setIsCompleted(true)
           
-          // Clear polling
+          // Clear polling and timeout
           if (intervalRef.current) {
             clearInterval(intervalRef.current)
+          }
+          if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current)
           }
         }
       } catch (err) {
@@ -55,16 +75,34 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
       }
     }
 
-    // Start polling
+    // Handle timeout
+    const handleTimeout = () => {
+      const timeoutMessage = type === 'analysis' 
+        ? 'Analysis is taking longer than expected (5 minutes). Check the Devin session directly.'
+        : 'Implementation is taking longer than expected (15 minutes). Check the Devin session directly.'
+      
+      setError(timeoutMessage)
+      setIsCompleted(true)
+      
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
+    }
+
+    // Start polling and timeout
     pollForCompletion() // Initial check
     intervalRef.current = setInterval(pollForCompletion, 5000)
+    timeoutRef.current = setTimeout(handleTimeout, getTimeout())
 
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
       }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+      }
     }
-  }, [sessionId, onComplete])
+  }, [sessionId, onComplete, type])
 
   const getTitle = () => {
     switch (type) {
