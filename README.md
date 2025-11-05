@@ -1,22 +1,6 @@
 # Devin Issue Assistant
 
-A production-ready full-stack web application that integrates GitHub Issues with Devin AI to automatically analyze and implement solutions for repository issues. Built for Cognition Labs as part of the Deployed Engineer take-home project.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-  - [System Architecture](#system-architecture)
-  - [Component Architecture](#component-architecture)
-  - [Data Flow](#data-flow)
-- [Technical Implementation](#technical-implementation)
-  - [Backend](#backend)
-  - [Frontend](#frontend)
-  - [Integration Layer](#integration-layer)
-- [API Reference](#api-reference)
-- [Setup & Deployment](#setup--deployment)
-- [Usage Guide](#usage-guide)
-- [Technical Deep Dives](#technical-deep-dives)
+A full-stack web application that integrates GitHub Issues with Devin AI to automatically analyze and implement solutions for repository issues.
 
 ## Overview
 
