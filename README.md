@@ -40,15 +40,15 @@ The Devin Issue Assistant streamlines issue resolution for engineering teams by:
 
 ### System Overview
 
-```mermaid
+```
 flowchart TB
     User[User / Engineer]
-    Frontend[FRONTEND LAYER\nReact 18 + TypeScript + Vite + Tailwind CSS\nPort: 5173]
-    FrontendComponents[App.tsx\nIssueList.tsx\nIssueCard.tsx\nSimpleLoadingScreen.tsx\nAnalysisPanel.tsx\nConfidenceBar.tsx\napi.ts]
-    Backend[BACKEND LAYER\nFastAPI + Python 3.11 + Uvicorn\nPort: 8000]
-    BackendModules[main.py: 9 REST API endpoints\nconfig.py: Settings management\ngithub_service.py: GitHub API wrapper\ndevin_service.py: Devin API wrapper]
-    GitHub[GitHub REST API v3\nGET /repos/.../issues\nPOST /repos/.../issues/{number}/comments\nAuth: Bearer token]
-    Devin[Devin AI API v1\nPOST /sessions\nGET /sessions/{id}\nAuth: Bearer token]
+    Frontend[FRONTEND LAYER<br/>React 18 + TypeScript + Vite + Tailwind CSS<br/>Port: 5173]
+    FrontendComponents[App.tsx<br/>IssueList.tsx<br/>IssueCard.tsx<br/>SimpleLoadingScreen.tsx<br/>AnalysisPanel.tsx<br/>ConfidenceBar.tsx<br/>api.ts]
+    Backend[BACKEND LAYER<br/>FastAPI + Python 3.11 + Uvicorn<br/>Port: 8000]
+    BackendModules[main.py: 9 REST API endpoints<br/>config.py: Settings management<br/>github_service.py: GitHub API wrapper<br/>devin_service.py: Devin API wrapper]
+    GitHub[GitHub REST API v3<br/>GET /repos/.../issues<br/>POST /repos/.../issues//comments<br/>Auth: Bearer token]
+    Devin[Devin AI API v1<br/>POST /sessions<br/>GET /sessions//id<br/>Auth: Bearer token]
 
     User -->|HTTP/REST| Frontend
     Frontend --> FrontendComponents
