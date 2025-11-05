@@ -1041,6 +1041,86 @@ Please implement this solution and create a pull request with the changes. Inclu
             "note": note
         }
 
+    def _parse_execution_result(self, session: Dict[str, Any], session_id: str, issue: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse Devin execution session result
+        
+        Args:
+            session: Session data from Devin API
+            session_id: Session ID
+            issue: GitHub issue
+            analysis: Analysis results
+            
+        Returns:
+            Parsed execution result
+        """
+        logger.info(f"Parsing Devin execution session result. Session keys: {list(session.keys())}")
+        
+        # Look for pull request information in session data
+        pr_url = None
+        pr_number = None
+        
+        # Check structured output first
+        structured_output = session.get("structured_output")
+        if structured_output:
+            pr_url = structured_output.get("pr_url")
+            pr_number = structured_output.get("pr_number")
+        
+        # Check pull_request field
+        if not pr_url:
+            pull_request = session.get("pull_request")
+            if pull_request:
+                pr_url = pull_request.get("html_url") or pull_request.get("url")
+                pr_number = pull_request.get("number")
+        
+        # Parse messages for PR information if not found
+        if not pr_url:
+            messages = session.get("messages", [])
+            for message in messages:
+                content = message.get("content", "")
+                if "pull request" in content.lower() or "pr #" in content.lower():
+                    # Try to extract PR URL from message content
+                    import re
+                    pr_match = re.search(r'https://github\.com/[^/]+/[^/]+/pull/(\d+)', content)
+                    if pr_match:
+                        pr_number = pr_match.group(1)
+                        # Construct PR URL from the match
+                        repo_match = re.search(r'https://github\.com/([^/]+/[^/]+)', content)
+                        if repo_match:
+                            pr_url = f"https://github.com/{repo_match.group(1)}/pull/{pr_number}"
+                    break
+        
+        status = session.get("status", "running")
+        status_enum = session.get("status_enum", "")
+        
+        # Determine completion status
+        completed_statuses = {"completed", "success", "done", "finished", "blocked"}
+        is_completed = (status.lower() in completed_statuses or 
+                       status_enum.lower() in completed_statuses)
+        
+        message = "Implementation completed successfully"
+        if pr_url:
+            message = f"Implementation completed successfully. Pull request #{pr_number} created."
+        elif is_completed:
+            message = "Implementation completed. Check the Devin session or your GitHub repository for the pull request."
+        else:
+            message = "Implementation is still in progress."
+        
+        execution_result = {
+            "session_id": session_id,
+            "status": "completed" if is_completed else status,
+            "message": message,
+            "session_url": session.get("url", f"https://app.devin.ai/sessions/{session_id.replace('devin-', '')}")
+        }
+        
+        # Add PR information if available
+        if pr_url:
+            execution_result["pr_url"] = pr_url
+            execution_result["pr_number"] = str(pr_number) if pr_number else None
+            
+        logger.info(f"Parsed execution result: status={execution_result['status']}, pr_url={pr_url}")
+        return execution_result
+
     def _create_fallback_execution(self, issue: Dict[str, Any], analysis: Dict[str, Any], error: str) -> Dict[str, Any]:
         """
         Create a fallback execution result when Devin API is unavailable

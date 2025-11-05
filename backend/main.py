@@ -353,9 +353,9 @@ async def stream_session_updates(session_id: str):
                     yield f"data: {json.dumps(status_data)}\n\n"
                     
                     if session_completed:
-                        # Re-parse the session to get final analysis results
+                        # Update session results when completed
                         try:
-                            # Find the issue that this session belongs to and re-parse
+                            # Find and update analysis session if this is one
                             session_to_reparse = None
                             issue_num_to_update = None
                             for issue_num, data in issue_results.items():
@@ -376,70 +376,45 @@ async def stream_session_updates(session_id: str):
                                 # Update stored analysis
                                 issue_results[issue_num_to_update]["analysis"] = updated_analysis
                                 logger.info(f"Updated analysis for issue #{issue_num_to_update} with final results")
+                            
+                            # Find and update execution session if this is one
+                            execution_to_update = None
+                            execution_issue_num = None
+                            for issue_num, data in issue_results.items():
+                                execution = data.get("execution", {})
+                                if execution.get("session_id") == session_id:
+                                    execution_to_update = session_details
+                                    execution_issue_num = issue_num
+                                    break
+                            
+                            if execution_to_update and execution_issue_num:
+                                # Parse execution results from completed session
+                                issue = issue_results[execution_issue_num]["issue"]
+                                analysis = issue_results[execution_issue_num].get("analysis", {})
+                                updated_execution = devin_service._parse_execution_result(
+                                    execution_to_update, session_id, issue, analysis
+                                )
+                                updated_execution["status"] = "completed"  # Mark as completed
                                 
-                                # Post comment to GitHub for streaming completed analysis
-                                # Check if the updated analysis should trigger a comment
-                                completed_statuses = {"completed", "success", "done", "finished", "blocked"}
-                                analysis_status = updated_analysis.get("status", "").lower()
-                                analysis_status_enum = updated_analysis.get("status_enum", "").lower()
-                                is_completed = (analysis_status in completed_statuses or 
-                                               analysis_status_enum in completed_statuses)
-                                
-                                if is_completed:
-                                    try:
-                                        comment = github_service.format_analysis_comment(updated_analysis)
-                                        github_service.post_comment(issue_num_to_update, comment)
-                                        logger.info(f"Posted streaming completion comment to issue #{issue_num_to_update} (status: {analysis_status}, status_enum: {analysis_status_enum})")
-                                    except Exception as comment_error:
-                                        logger.warning(f"Failed to post streaming completion comment: {str(comment_error)}")
-                                else:
-                                    logger.info(f"Skipping streaming comment post for issue #{issue_num_to_update} - status '{analysis_status}' and status_enum '{analysis_status_enum}' not in completed statuses: {completed_statuses}")
-                                
-                                # Send updated analysis in completion event
-                                completion_data = {
-                                    "type": "completed",  
-                                    "data": {
-                                        "session_id": session_id,
-                                        "final_status": status,
-                                        "final_status_enum": status_enum,
-                                        "total_messages": len(messages) if messages else 0,
-                                        "total_thinking_steps": len(thinking_steps) if thinking_steps else 0,
-                                        "updated_analysis": {
-                                            "summary": updated_analysis.get("summary", "")[:200] + "..." if len(updated_analysis.get("summary", "")) > 200 else updated_analysis.get("summary", ""),
-                                            "confidence": updated_analysis.get("confidence"),
-                                            "steps_count": len(updated_analysis.get("steps", []))
-                                        }
-                                    },
-                                    "timestamp": time.time()
-                                }
-                            else:
-                                # Fallback completion event
-                                completion_data = {
-                                    "type": "completed",
-                                    "data": {
-                                        "session_id": session_id,
-                                        "final_status": status,
-                                        "final_status_enum": status_enum,
-                                        "total_messages": len(messages) if messages else 0,
-                                        "total_thinking_steps": len(thinking_steps) if thinking_steps else 0
-                                    },
-                                    "timestamp": time.time()
-                                }
-                        except Exception as parse_error:
-                            logger.error(f"Error re-parsing completed session: {str(parse_error)}")
-                            # Send standard completion event
-                            completion_data = {
-                                "type": "completed",
-                                "data": {
-                                    "session_id": session_id,
-                                    "final_status": status,
-                                    "final_status_enum": status_enum,
-                                    "total_messages": len(messages) if messages else 0,
-                                    "total_thinking_steps": len(thinking_steps) if thinking_steps else 0
-                                },
-                                "timestamp": time.time()
-                            }
+                                # Update stored execution
+                                issue_results[execution_issue_num]["execution"] = updated_execution
+                                logger.info(f"Updated execution for issue #{execution_issue_num} with final results")
                         
+                        except Exception as parse_error:
+                            logger.error(f"Error updating session results: {str(parse_error)}")
+                        
+                        # Send completion event
+                        completion_data = {
+                            "type": "completed",
+                            "data": {
+                                "session_id": session_id,
+                                "final_status": status,
+                                "final_status_enum": status_enum,
+                                "total_messages": len(messages) if messages else 0,
+                                "total_thinking_steps": len(thinking_steps) if thinking_steps else 0
+                            },
+                            "timestamp": time.time()
+                        }
                         yield f"data: {json.dumps(completion_data)}\n\n"
                         logger.info(f"Session {session_id} completed, ending stream")
                         break

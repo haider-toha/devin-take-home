@@ -86,30 +86,54 @@ export default function IssueCard({ issue, onUpdate }: IssueCardProps) {
   const handleLoadingComplete = (sessionId: string, completionData?: any) => {
     console.log(`Loading completed for issue #${issue.number}, sessionId: ${sessionId}`, completionData)
     
-    // Re-fetch the issue to get updated analysis/execution results
-    setTimeout(async () => {
-      try {
-        console.log(`Re-fetching issue #${issue.number} after completion`)
-        const updatedIssue = await getIssue(issue.number)
-        console.log(`Updated issue #${issue.number} after completion:`, {
-          hasAnalysis: !!updatedIssue.analysis,
-          analysisStatus: updatedIssue.analysis?.status
-        })
-        onUpdate(updatedIssue)
-      } catch (error) {
-        console.error('Failed to refresh issue after completion:', error)
-      }
-    }, 500) // Small delay to ensure backend has processed the update
-    
-    // Reset loading states
-    if (loadingType === 'analysis') {
+    // For execution completion, don't immediately clear the loading state
+    // Let the completion screen show first, then update after a delay
+    if (loadingType === 'execution') {
+      // Keep the loading screen showing completion for execution
+      setTimeout(async () => {
+        try {
+          console.log(`Re-fetching issue #${issue.number} after execution completion`)
+          const updatedIssue = await getIssue(issue.number)
+          console.log(`Updated issue #${issue.number} after execution completion:`, {
+            hasAnalysis: !!updatedIssue.analysis,
+            hasExecution: !!updatedIssue.execution,
+            executionStatus: updatedIssue.execution?.status
+          })
+          onUpdate(updatedIssue)
+          
+          // Reset loading states after successful update
+          setIsExecuting(false)
+          setLoadingSessionId(null)
+          setLoadingType(null)
+        } catch (error) {
+          console.error('Failed to refresh issue after execution completion:', error)
+          // Even on error, reset the loading states
+          setIsExecuting(false)
+          setLoadingSessionId(null)
+          setLoadingType(null)
+        }
+      }, 3000) // Longer delay for execution to show completion screen
+    } else {
+      // For analysis, update immediately
+      setTimeout(async () => {
+        try {
+          console.log(`Re-fetching issue #${issue.number} after analysis completion`)
+          const updatedIssue = await getIssue(issue.number)
+          console.log(`Updated issue #${issue.number} after analysis completion:`, {
+            hasAnalysis: !!updatedIssue.analysis,
+            analysisStatus: updatedIssue.analysis?.status
+          })
+          onUpdate(updatedIssue)
+        } catch (error) {
+          console.error('Failed to refresh issue after analysis completion:', error)
+        }
+      }, 500)
+      
+      // Reset loading states for analysis
       setIsAnalyzing(false)
-    } else if (loadingType === 'execution') {
-      setIsExecuting(false)
+      setLoadingSessionId(null)
+      setLoadingType(null)
     }
-    
-    setLoadingSessionId(null)
-    setLoadingType(null)
   }
 
   const formatDate = (dateString: string) => {
