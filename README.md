@@ -433,7 +433,7 @@ def generate_fallback_analysis(issue_number: int, title: str, labels: list) -> d
 - **Vite**: Fast build tool and dev server
 - **Tailwind CSS**: Utility-first styling
 - **Axios**: HTTP client with interceptors
-- **Polling**: Simple status checking every 3 seconds
+- **Polling**: Simple status checking every 5 seconds
 
 #### State Management
 
@@ -503,7 +503,7 @@ useEffect(() => {
       clearInterval(pollInterval);
       onComplete?.();
     }
-  }, 3000); // Poll every 3 seconds
+  }, 5000); // Poll every 5 seconds
 
   return () => clearInterval(pollInterval);
 }, [sessionId]);
@@ -1069,7 +1069,7 @@ For faster workflow, use **"Analyze & Implement"** button.
 ### 5. Track Progress
 
 **Option 1: Polling (SimpleLoadingScreen)**
-- Automatically polls session status every 3 seconds
+- Automatically polls session status every 5 seconds
 - Displays type-specific messages (Analyzing, Executing, Implementing)
 - Shows completion and PR link when done
 
@@ -1226,7 +1226,7 @@ The application uses a simple, reliable polling approach:
 
 **SimpleLoadingScreen Features:**
 - **Static loading UI**: Shows animated loading indicators and informative messages  
-- **Polling**: Checks session status every 3 seconds until completion
+- **Polling**: Checks session status every 5 seconds until completion
 - **Smart completion**: Detects when Devin is done and shows results
 - **Error handling**: Displays helpful error messages if something goes wrong
 - **Type-aware messaging**: Different messages for analysis vs execution vs unified tasks

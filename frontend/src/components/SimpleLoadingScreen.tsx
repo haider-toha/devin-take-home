@@ -21,7 +21,7 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
       return // Just show loading state, parent component will handle completion
     }
 
-    // Poll for completion every 3 seconds
+    // Poll for completion every 5 seconds
     const pollForCompletion = async () => {
       try {
         const sessionData = await getSessionStatus(sessionId)
@@ -57,7 +57,7 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
 
     // Start polling
     pollForCompletion() // Initial check
-    intervalRef.current = setInterval(pollForCompletion, 3000)
+    intervalRef.current = setInterval(pollForCompletion, 5000)
 
     return () => {
       if (intervalRef.current) {
