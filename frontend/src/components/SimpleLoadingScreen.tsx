@@ -26,12 +26,12 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
     const getTimeout = () => {
       switch (type) {
         case 'analysis':
-          return 300000 // 5 minutes (300 seconds)
+          return 6000000 // 6000 seconds
         case 'execution':
         case 'unified':
-          return 900000 // 15 minutes (900 seconds)
+          return 6000000 // 6000 seconds
         default:
-          return 300000
+          return 6000000
       }
     }
 
@@ -40,7 +40,10 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
       try {
         const sessionData = await getSessionStatus(sessionId)
         const status = sessionData.status
-        const statusEnum = sessionData.status_enum
+        const statusEnum = sessionData.status_enum || sessionData.statusEnum
+
+        // Debug logging
+        console.log(`Session ${sessionId} status: ${status}, status_enum: ${statusEnum}`)
 
         // Check if session is completed
         if (status === 'completed' || status === 'success' || 
@@ -78,8 +81,8 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
     // Handle timeout
     const handleTimeout = () => {
       const timeoutMessage = type === 'analysis' 
-        ? 'Analysis is taking longer than expected (5 minutes). Check the Devin session directly.'
-        : 'Implementation is taking longer than expected (15 minutes). Check the Devin session directly.'
+        ? 'Analysis is taking longer than expected (6000 seconds). Check the Devin session directly.'
+        : 'Implementation is taking longer than expected (6000 seconds). Check the Devin session directly.'
       
       setError(timeoutMessage)
       setIsCompleted(true)
@@ -91,7 +94,7 @@ export default function SimpleLoadingScreen({ sessionId, type, onComplete }: Sim
 
     // Start polling and timeout
     pollForCompletion() // Initial check
-    intervalRef.current = setInterval(pollForCompletion, 5000)
+    intervalRef.current = setInterval(pollForCompletion, 6000)
     timeoutRef.current = setTimeout(handleTimeout, getTimeout())
 
     return () => {

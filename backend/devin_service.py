@@ -28,6 +28,7 @@ class DevinService:
             issue_title = issue.get("title", "")
             issue_body = issue.get("body", "")
             issue_labels = [label["name"] for label in issue.get("labels", [])]
+            repo = settings.github_repo
             
             # Construct analysis prompt with specific structure request
             prompt = f"""Analyze this GitHub issue and provide your response in the following EXACT JSON format:
@@ -45,6 +46,8 @@ class DevinService:
   "success_criteria": ["Criteria 1", "Criteria 2"]
 }}
 
+Repository: {repo}
+
 GitHub Issue #{issue_number}:
 Title: {issue_title}
 
@@ -53,7 +56,7 @@ Description:
 
 Labels: {', '.join(issue_labels) if issue_labels else 'None'}
 
-IMPORTANT: Respond ONLY with the JSON object above, no additional text or formatting. The JSON must be valid and parseable."""
+IMPORTANT: Access the repository {repo} to understand the codebase context before analysis. Respond ONLY with the JSON object above, no additional text or formatting. The JSON must be valid and parseable."""
 
             payload = {
                 "prompt": prompt,
@@ -95,7 +98,7 @@ IMPORTANT: Respond ONLY with the JSON object above, no additional text or format
 
             # Poll for results - wait longer for Devin to respond for complex issues
             try:
-                result = self._wait_for_session_result(session_id, max_wait=300, interval=5)
+                result = self._wait_for_session_result(session_id, max_wait=6000, interval=6)
                 # Parse and structure the result
                 analysis = self._parse_analysis_result(result, session_id, issue)
                 return analysis
@@ -168,11 +171,15 @@ IMPORTANT: Respond ONLY with the JSON object above, no additional text or format
 }}
 
 2. After providing the analysis, IMPLEMENT the solution:
-   - Access the repository: {repo}
+   - Clone/access the GitHub repository: {repo}
+   - Navigate to the repository directory
+   - Create a new branch for this issue: issue-{issue_number}
    - Make the necessary code changes
    - Write or update tests as needed
-   - Create a pull request with proper description
-   - Include the issue number in your PR title/description
+   - Commit changes with descriptive messages
+   - Push the branch to GitHub
+   - Create a pull request with proper description referencing issue #{issue_number}
+   - Include "Fixes #{issue_number}" in the PR description for auto-linking
 
 GitHub Issue #{issue_number}:
 Title: {issue_title}
@@ -217,7 +224,7 @@ Start with the JSON analysis, then proceed with implementation."""
 
             # Poll for results with longer timeout for unified sessions
             try:
-                result = self._wait_for_session_result(session_id, max_wait=900, interval=10)  # 15 minutes max
+                result = self._wait_for_session_result(session_id, max_wait=6000, interval=6)
                 # Parse and structure the result
                 analysis = self._parse_unified_result(result, session_id, issue)
                 return analysis
@@ -500,42 +507,86 @@ Please implement this solution and create a pull request with the changes. Inclu
         """
         elapsed = 0
         poll_count = 0
+        last_successful_session = None
+        consecutive_errors = 0
+        max_consecutive_errors = 10  # Allow up to 10 consecutive errors before giving up
+        
         while elapsed < max_wait:
             poll_count += 1
-            session = self.get_session_status(session_id)
-            status = session.get("status", "unknown")
-            status_enum = session.get("status_enum", "")
+            
+            try:
+                session = self.get_session_status(session_id)
+                last_successful_session = session  # Store the last successful response
+                consecutive_errors = 0  # Reset error counter on success
+                
+                status = session.get("status", "unknown")
+                status_enum = session.get("status_enum", "")
 
-            logger.info(f"Poll #{poll_count} - Session {session_id} status: {status}, status_enum: {status_enum} (elapsed: {elapsed}s/{max_wait}s)")
+                logger.info(f"Poll #{poll_count} - Session {session_id} status: {status}, status_enum: {status_enum} (elapsed: {elapsed}s/{max_wait}s)")
 
-            # Check for completion states
-            if status in ["completed", "success", "done", "finished"] or status_enum in ["completed", "success", "done", "finished", "blocked"]:
-                logger.info(f"Session {session_id} completed successfully after {elapsed}s (status: {status}, status_enum: {status_enum})")
-                return session
+                # Check for completion states
+                if status in ["completed", "success", "done", "finished"] or status_enum in ["completed", "success", "done", "finished", "blocked"]:
+                    logger.info(f"Session {session_id} completed successfully after {elapsed}s (status: {status}, status_enum: {status_enum})")
+                    return session
 
-            # Check for failure states
-            elif status in ["failed", "error", "cancelled", "canceled"] or status_enum in ["failed", "error", "cancelled", "canceled"]:
-                logger.error(f"Session {session_id} failed with status: {status}, status_enum: {status_enum}")
-                raise Exception(f"Session failed with status: {status}")
+                # Check for failure states
+                elif status in ["failed", "error", "cancelled", "canceled"] or status_enum in ["failed", "error", "cancelled", "canceled"]:
+                    logger.error(f"Session {session_id} failed with status: {status}, status_enum: {status_enum}")
+                    raise Exception(f"Session failed with status: {status}")
 
-            # For running/pending states, continue polling
-            # "claimed" means Devin has claimed the session and is working on it
-            elif status in ["running", "pending", "in_progress", "processing", "claimed"] or status_enum in ["working", "running", "pending", "in_progress", "processing"]:
-                logger.debug(f"Session {session_id} still {status}/{status_enum}, continuing to poll...")
+                # For running/pending states, continue polling
+                # "claimed" means Devin has claimed the session and is working on it
+                elif status in ["running", "pending", "in_progress", "processing", "claimed"] or status_enum in ["working", "running", "pending", "in_progress", "processing"]:
+                    logger.debug(f"Session {session_id} still {status}/{status_enum}, continuing to poll...")
 
-            # For unknown states, log a warning but continue
-            else:
-                logger.warning(f"Session {session_id} has unknown status: {status}, status_enum: {status_enum}. Will continue polling. If this persists, consider checking the Devin UI directly.")
+                # For unknown states, log a warning but continue
+                else:
+                    logger.warning(f"Session {session_id} has unknown status: {status}, status_enum: {status_enum}. Will continue polling. If this persists, consider checking the Devin UI directly.")
+
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"Error fetching session status (attempt {consecutive_errors}/{max_consecutive_errors}): {str(e)}")
+                
+                # If we've had too many consecutive errors, give up
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"Too many consecutive errors ({consecutive_errors}), stopping polling for session {session_id}")
+                    if last_successful_session:
+                        logger.info(f"Returning last successful session state")
+                        return last_successful_session
+                    else:
+                        # No successful session data available, raise the error
+                        raise Exception(f"Failed to get session status after {consecutive_errors} attempts: {str(e)}")
+                
+                # For temporary errors (like 502), wait a bit longer before retrying
+                if "502" in str(e) or "503" in str(e) or "Bad Gateway" in str(e) or "Service Unavailable" in str(e):
+                    logger.info(f"Temporary server error, waiting {interval * 2}s before retry...")
+                    time.sleep(interval * 2)
+                    elapsed += interval * 2
+                    continue
 
             time.sleep(interval)
             elapsed += interval
 
-        # Timeout reached - return current state
-        final_session = self.get_session_status(session_id)
-        final_status = final_session.get("status", "unknown")
-        logger.warning(f"Session {session_id} timed out after {max_wait}s with status: {final_status}")
-        logger.info(f"Returning partial result. Full session data: {final_session}")
-        return final_session
+        # Timeout reached - try to get final state
+        try:
+            final_session = self.get_session_status(session_id)
+            final_status = final_session.get("status", "unknown")
+            logger.warning(f"Session {session_id} timed out after {max_wait}s with status: {final_status}")
+            logger.info(f"Returning partial result. Full session data: {final_session}")
+            return final_session
+        except Exception as e:
+            logger.error(f"Failed to get final session status: {str(e)}")
+            if last_successful_session:
+                logger.info(f"Returning last successful session state from polling")
+                return last_successful_session
+            else:
+                # Create a minimal session response indicating timeout
+                return {
+                    "session_id": session_id,
+                    "status": "timeout",
+                    "status_enum": "timeout",
+                    "error": f"Session timed out after {max_wait}s and final status check failed: {str(e)}"
+                }
     
     def _parse_devin_text_response(self, text: str) -> Dict[str, Any]:
         """
